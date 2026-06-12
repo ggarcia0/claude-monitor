@@ -172,6 +172,8 @@ class Cache:
         self.title = {}; self.title_mt = {}
         self.model = {}
         self.git = {}; self.git_t = {}
+        self.gitx = {}; self.gitx_t = {}
+        self.detail = {}; self.detail_mt = {}
         self.hist = defaultdict(lambda: deque(maxlen=24))
         self.prev = {}
         self.changed = {}      # pid -> tick del último cambio de estado (flash)
@@ -241,6 +243,126 @@ def context_tokens(sid):
             break
     CA.usage[sid] = ctx; CA.usage_mt[sid] = mt
     return ctx
+
+EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Create"}
+def session_detail(sid):
+    """Escanea el .jsonl completo y devuelve un dict con info rica (cacheado por mtime)."""
+    empty = dict(last_prompt="", n_user=0, n_assistant=0, mode="", perm="",
+                 tools=[], files=[], tok={}, total_in=0, total_out=0, pending="")
+    if not sid: return empty
+    jf = jsonl_for(sid)
+    if not jf: return empty
+    try: mt = os.path.getmtime(jf)
+    except OSError: return empty
+    if CA.detail_mt.get(sid) == mt:
+        return CA.detail.get(sid, empty)
+    d = dict(empty); d["tools"] = []; d["files"] = []
+    tools, files = deque(maxlen=8), []
+    si = scc = scr = so = 0          # sumas: input, cache-creation, cache-read, output
+    last_tooluse = ""
+    try:
+        with open(jf, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try: o = json.loads(line)
+                except Exception: continue
+                t = o.get("type")
+                if t == "last-prompt": d["last_prompt"] = (o.get("lastPrompt") or "").strip()
+                elif t == "mode": d["mode"] = o.get("mode", "")
+                elif t == "permission-mode": d["perm"] = o.get("permissionMode", "")
+                elif t == "user": d["n_user"] += 1
+                elif t == "assistant":
+                    d["n_assistant"] += 1
+                    msg = o.get("message", {})
+                    u = msg.get("usage")
+                    if u:
+                        si  += u.get("input_tokens", 0)
+                        scc += u.get("cache_creation_input_tokens", 0)
+                        scr += u.get("cache_read_input_tokens", 0)
+                        so  += u.get("output_tokens", 0)
+                        d["tok"] = dict(inp=u.get("input_tokens", 0),
+                                        out=u.get("output_tokens", 0),
+                                        cr=u.get("cache_read_input_tokens", 0),
+                                        cc=u.get("cache_creation_input_tokens", 0))
+                    for c in (msg.get("content") or []):
+                        if c.get("type") == "tool_use":
+                            nm = c.get("name", "tool"); inp = c.get("input", {}) or {}
+                            arg = inp.get("file_path") or inp.get("command") or inp.get("path") or inp.get("pattern") or ""
+                            arg = " ".join(str(arg).split())[:50]
+                            tools.append((nm, arg)); last_tooluse = f"{nm} {arg}".strip()
+                            if nm in EDIT_TOOLS and inp.get("file_path"):
+                                fp = short_path(inp["file_path"])
+                                if fp in files: files.remove(fp)
+                                files.append(fp)
+    except Exception:
+        pass
+    d["tools"] = list(tools); d["files"] = files[-8:]
+    d["sum"] = dict(inp=si, cc=scc, cr=scr, out=so)
+    d["total_in"] = si + scc          # input "nuevo" real (sin contar relecturas de caché)
+    d["total_out"] = so
+    d["pending"] = last_tooluse
+    CA.detail[sid] = d; CA.detail_mt[sid] = mt
+    return d
+
+# precios aprox por millón de tokens (USD): (input, output)
+PRICE = {"opus": (15, 75), "sonnet": (3, 15), "haiku": (0.80, 4)}
+def est_cost(model, sums):
+    key = "opus" if "opus" in model else "sonnet" if "sonnet" in model else "haiku" if "haiku" in model else None
+    if not key or not sums: return None
+    pin, pout = PRICE[key]
+    # caché: escritura ~1.25x input, lectura ~0.1x input
+    return (sums["inp"]*pin + sums["cc"]*pin*1.25 + sums["cr"]*pin*0.1 + sums["out"]*pout) / 1e6
+
+def git_extended(cwd, tick):
+    """último commit + ahead/behind + archivos modificados. cacheado ~10 ticks."""
+    t10 = tick // 10
+    if CA.gitx_t.get(cwd) == t10 and cwd in CA.gitx:
+        return CA.gitx[cwd]
+    info = dict(commit="—", ahead=0, behind=0, files=[])
+    try:
+        c = subprocess.run(["git","-C",cwd,"log","-1","--format=%h %s"],
+                           capture_output=True, text=True, timeout=2)
+        if c.returncode == 0 and c.stdout.strip():
+            info["commit"] = c.stdout.strip()[:60]
+            ab = subprocess.run(["git","-C",cwd,"rev-list","--left-right","--count","@{u}...HEAD"],
+                               capture_output=True, text=True, timeout=2)
+            if ab.returncode == 0 and ab.stdout.split():
+                parts = ab.stdout.split()
+                if len(parts) == 2:
+                    info["behind"], info["ahead"] = int(parts[0]), int(parts[1])
+            st = subprocess.run(["git","-C",cwd,"status","--porcelain"],
+                               capture_output=True, text=True, timeout=2)
+            info["files"] = [l[3:] for l in st.stdout.splitlines() if l][:10]
+    except Exception: pass
+    CA.gitx[cwd] = info; CA.gitx_t[cwd] = t10
+    return info
+
+def ide_for(cwd):
+    """IDE conectado a este cwd (de los locks de ~/.claude/ide)."""
+    try:
+        for lk in glob.glob(os.path.join(CFG, "ide", "*.lock")):
+            with open(lk) as f: d = json.load(f)
+            if any(cwd == w or cwd.startswith(w + "/") for w in d.get("workspaceFolders", [])):
+                return d.get("ideName", "IDE")
+    except Exception: pass
+    return ""
+
+def tmux_pane_of(pid):
+    """ubicación tmux 'sesión:ventana.panel' de un pid, sin cambiar foco."""
+    if not has_cmd("tmux"): return ""
+    try:
+        if subprocess.run(["tmux","info"], capture_output=True).returncode != 0: return ""
+        out = subprocess.run(["tmux","list-panes","-a","-F","#{pane_pid} #{session_name}:#{window_index}.#{pane_index}"],
+                            capture_output=True, text=True).stdout
+        panes = {}
+        for ln in out.splitlines():
+            p = ln.split()
+            if len(p) == 2: panes[p[0]] = p[1]
+        cur, guard = str(pid), 0
+        while cur and cur != "0" and guard < 40:
+            if cur in panes: return panes[cur]
+            cur = ppid_of(cur); guard += 1
+    except Exception: pass
+    return ""
 
 def title_of(sid):
     """nombre/título auto-generado de la sesión (aiTitle). cacheado por mtime."""
@@ -447,13 +569,15 @@ def play_sound(kind, pid=None):
 
 # ───────────────────────── session model ──────────────────────────────────
 class Session:
-    __slots__=("pid","status","kind","cwd","upd","sid","wf","ver","name","started","is_alive","activity")
+    __slots__=("pid","status","kind","cwd","upd","sid","wf","ver","name","started",
+               "entry","jobid","is_alive","activity")
     def __init__(self, d):
         self.pid = int(d.get("pid", 0)); self.kind = d.get("kind","?")
         self.cwd = d.get("cwd",""); self.upd = d.get("statusUpdatedAt") or d.get("updatedAt") or 0
         self.sid = d.get("sessionId",""); self.wf = d.get("waitingFor","")
         self.ver = d.get("version",""); self.name = d.get("name","")
         self.started = d.get("startedAt") or 0
+        self.entry = d.get("entrypoint",""); self.jobid = d.get("jobId","")
         self.is_alive = alive(self.pid)
         self.status = d.get("status","?") if self.is_alive else "dead"
         self.activity = ""
@@ -582,6 +706,7 @@ class App:
         self.sound_on = True; self.notif_on = True          # toggles independientes
         self.group = False; self.filter = ""; self.sort_i = 0; self.sort_rev = False
         self.confirm = None; self.msg = ""; self.theme_i = 0
+        self.inspect = False
         self.rowpids = []
 
     # ---- rendering ----
@@ -593,6 +718,13 @@ class App:
         counts = defaultdict(int)
         for s in sessions: counts[s.status] += 1
         n_dead = sum(1 for s in sessions if s.status == "dead")
+
+        # ----- inspector de pantalla completa -----
+        if self.inspect and self.rowpids:
+            pid = self.rowpids[min(self.sel, len(self.rowpids)-1)]
+            s = next((x for x in sessions if x.pid == pid), None)
+            if s: return self._inspector(s, cols, rows)
+            self.inspect = False
 
         L = []
         inner = cols - 2
@@ -756,6 +888,92 @@ class App:
             seg += f"{lc}load {load:.2f}{RST}"
         return seg
 
+    def _inspector(self, s, cols, rows):
+        inner = cols - 2
+        d  = session_detail(s.sid)
+        gx = git_extended(s.cwd, self.tick)
+        ide = ide_for(s.cwd)
+        pane = tmux_pane_of(s.pid) if s.is_alive else ""
+        ctx = context_tokens(s.sid); mdl = model_of(s.sid); ps = ps_info(s.pid)
+        cost = est_cost(mdl, d.get("sum"))
+        started = time.strftime("%H:%M", time.localtime(s.started/1000)) if s.started else "—"
+        tok = d["tok"]
+        L = []
+
+        def field(label, value):
+            return f"{T.teal}{label}{RST} {value}"
+        def row1(*fields):
+            L.append("  " + "    ".join(fields))
+        def section(t):
+            L.append("")
+            L.append(f"  {T.coral_d}{B}▌ {t}{RST}")
+
+        # ---- cabecera ----
+        L.append(f"{T.coral}╭{'─'*inner}╮{RST}")
+        L.append(self._band(gradient(f"INSPECTOR · {s.display_name}", self.tick, GRAD_PAL), inner))
+        L.append(self._band(f"{pill(s.status, big=True)}  {T.gray}PID {s.pid}  ·  {s.sid[:8] or '—'}{RST}", inner))
+        L.append(f"{T.coral}╰{'─'*inner}╯{RST}")
+
+        # ---- identidad ----
+        section("IDENTIDAD")
+        row1(field("tipo", s.kind), field("entrypoint", s.entry or "—"),
+             field("IDE", ide or "—"), field("versión", f"v{s.ver}" if s.ver else "—"))
+        row1(field("sessionId", s.sid or "—"))
+        row1(field("jobId", s.jobid or "—"), field("ubicación", pane or "—"),
+             field("directorio", short_path(s.cwd)))
+
+        # ---- tiempo ----
+        section("TIEMPO")
+        row1(field("iniciada", f"{started}  ({s.uptime})"),
+             field("en estado", f"hace {fmt_age(s.upd)}"),
+             field("estado", pill(s.status, big=True)))
+
+        # ---- tokens / contexto ----
+        section("CONTEXTO Y TOKENS")
+        pct = min(100, ctx*100//200000)
+        ctxcol = T.red if pct>=85 else T.yellow if pct>=60 else T.green
+        row1(field("contexto", f"{ctxcol}{fmt_tokens(ctx)}{RST} {gauge(ctx/200000,12)} {ctxcol}{pct}%{RST}"))
+        if tok:
+            row1(field("último turno", f"in {fmt_tokens(tok['inp'])} · out {fmt_tokens(tok['out'])} · "
+                                       f"caché-r {fmt_tokens(tok['cr'])} · caché-w {fmt_tokens(tok['cc'])}"))
+        row1(field("total sesión", f"in {fmt_tokens(d['total_in'])} · out {fmt_tokens(d['total_out'])}"
+                                    + (f"   {T.green}≈ US${cost:.2f}{RST}" if cost is not None else "")))
+
+        # ---- conversación ----
+        section("CONVERSACIÓN")
+        row1(field("modo", d["mode"] or "—"), field("permisos", d["perm"] or "—"),
+             field("turnos", f"{d['n_user']} tú / {d['n_assistant']} claude"),
+             field("modelo", mdl))
+        if d["last_prompt"]:
+            L.append("  " + field("último prompt", f"{T.cream}{pad(d['last_prompt'], inner-18)}{RST}"))
+
+        # ---- actividad ----
+        section("ACTIVIDAD")
+        if s.status == "waiting" and d["pending"]:
+            L.append("  " + field("pide aprobar", f"{T.yellow}{pad(d['pending'], inner-18)}{RST}"))
+        L.append("  " + field("haciendo", f"{T.cream}{pad(s.activity or '—', inner-18)}{RST}"))
+        if d["tools"]:
+            tl = "  ".join(f"{T.purple}{n}{RST}" for n, _ in list(d["tools"])[-6:])
+            L.append("  " + field("últimas tools", tl))
+        L.append("  " + field("uso (24)", sparkline(s.pid, 24)))
+
+        # ---- git / archivos ----
+        section("GIT")
+        ab = ""
+        if gx["ahead"] or gx["behind"]:
+            ab = f"  {T.yellow}↑{gx['ahead']} ↓{gx['behind']}{RST}"
+        row1(field("último commit", f"{T.cream}{pad(gx['commit'], inner-30)}{RST}{ab}"))
+        if gx["files"]:
+            row1(field("modificados", f"{T.gray}{pad(', '.join(gx['files']), inner-18)}{RST}"))
+        if d["files"]:
+            row1(field("editados (sesión)", f"{T.gray}{pad(', '.join(d['files']), inner-20)}{RST}"))
+
+        # relleno + footer
+        while len(L) < rows - 1: L.append("")
+        L = L[:rows-1]
+        L.append("  " + self._footer())
+        return L
+
     def _band(self, content, inner):
         return f"{T.coral}│{RST} " + pad(content, inner-1) + f"{T.coral}│{RST}"
 
@@ -766,9 +984,12 @@ class App:
         if self.confirm is not None:
             return (f"{bg(150,50,50)}{fg(255,235,235)}{B}"
                     f"  ¿Matar PID {self.confirm}?   (y) sí    (n) no  {RST}")
-        keys = [("↵","ir"),("↑↓","nav"),("x","matar"),("s/S","orden"),("/","filtro"),
-                ("g","grupos"),("C","compacto"),("c","limpiar"),("t","tema"),
-                ("m","sonido"),("n","notif"),("d","muertas"),("q","salir")]
+        if self.inspect:
+            keys = [("i/Esc","volver"),("↑↓","cambiar sesión"),("↵","ir"),("x","matar"),("q","salir")]
+        else:
+            keys = [("↵","ir"),("i","detalle"),("↑↓","nav"),("x","matar"),("s/S","orden"),("/","filtro"),
+                    ("g","grupos"),("C","compacto"),("c","limpiar"),("t","tema"),
+                    ("m","sonido"),("n","notif"),("d","muertas"),("q","salir")]
         f = " ".join(f"{T.coral}{k}{RST}{DIM}{v}{RST}" for k, v in keys)
         if self.msg:
             return f"{T.yellow}{B}{self.msg}{RST}    " + f
@@ -894,8 +1115,10 @@ def run_tui(app):
                 seq = os.read(fd, 2).decode("utf-8","replace")
                 if seq == "[A": nav(-1)
                 elif seq == "[B": nav(1)
+                elif seq == "" and app.inspect: app.inspect = False   # Esc cierra inspector
                 continue
-            if ch in ("\r","\n"): app.jump()
+            if ch in ("i","I"): app.inspect = not app.inspect
+            elif ch in ("\r","\n"): app.jump()
             elif ch in ("k","K"): nav(-1)
             elif ch in ("j","J"): nav(1)
             elif ch in ("x","X"): app.ask_kill()
