@@ -611,21 +611,23 @@ def collect(app):
             CA.changed[s.pid] = app.tick           # para el flash de la fila
             if app.mode == "tui":
                 snd = app.sound_on; ntf = app.notif_on
-                nm = s.display_name; loc = short_path(s.cwd); tag = f"claude-{s.pid}"
+                # nombre de la sesión si existe (manual o auto), si no el PID
+                ident = s.name or title_of(s.sid) or f"PID {s.pid}"
+                loc = short_path(s.cwd); tag = f"claude-{s.pid}"
                 if s.status == "waiting":
                     if snd: play_sound("permission", s.pid)
-                    if ntf: notify(f"🔐 {nm} · espera permiso",
-                                   f"Pide aprobar: {s.wf or 'una acción'}\n📁 {loc}   ·   PID {s.pid}",
+                    if ntf: notify(f"🔐 {ident} · espera permiso",
+                                   f"Pide aprobar: {s.wf or 'una acción'}\n📁 {loc}",
                                    urgency="critical", tag=tag, timeout=0, category="im.received")
                 elif s.status == "blocked":
                     if snd: play_sound("blocked")
-                    if ntf: notify(f"🚫 {nm} · bloqueado",
-                                   f"La sesión quedó bloqueada (¿límite de uso?)\n📁 {loc}   ·   PID {s.pid}",
+                    if ntf: notify(f"🚫 {ident} · bloqueado",
+                                   f"La sesión quedó bloqueada (¿límite de uso?)\n📁 {loc}",
                                    urgency="critical", tag=tag, timeout=0)
                 elif pv == "busy" and s.status == "idle":
                     if snd: play_sound("done")
-                    if ntf: notify(f"✅ {nm} · tarea terminada",
-                                   f"{s.activity or 'Listo.'}\n📁 {loc}   ·   PID {s.pid}",
+                    if ntf: notify(f"✅ {ident} · tarea terminada",
+                                   f"{s.activity or 'Listo.'}\n📁 {loc}",
                                    urgency="normal", tag=tag, timeout=6000, category="transfer.complete")
         CA.prev[s.pid] = s.status
         lvl = {"busy":6,"waiting":3,"blocked":1,"idle":1}.get(s.status, 0)
