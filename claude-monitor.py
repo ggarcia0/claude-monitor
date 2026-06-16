@@ -73,7 +73,7 @@ def apply_theme(name):
 
 apply_theme("oscuro")
 MASCOT = {
-    "busy":    "✳✴❉❈❊✺✷✸", "waiting": "◆◇◆◇", "idle": "✳·✳·",
+    "busy":    "✳✴❉❈❊✺✷✸", "waiting": "◆◇◆◇", "idle": "zᶻ zᶻ",
     "blocked": "■□", "dead": "✝✝",
 }
 
@@ -305,14 +305,6 @@ def session_detail(sid):
     CA.detail[sid] = d; CA.detail_mt[sid] = mt
     return d
 
-# precios aprox por millón de tokens (USD): (input, output)
-PRICE = {"opus": (15, 75), "sonnet": (3, 15), "haiku": (0.80, 4)}
-def est_cost(model, sums):
-    key = "opus" if "opus" in model else "sonnet" if "sonnet" in model else "haiku" if "haiku" in model else None
-    if not key or not sums: return None
-    pin, pout = PRICE[key]
-    # caché: escritura ~1.25x input, lectura ~0.1x input
-    return (sums["inp"]*pin + sums["cc"]*pin*1.25 + sums["cr"]*pin*0.1 + sums["out"]*pout) / 1e6
 
 def git_extended(cwd, tick):
     """último commit + ahead/behind + archivos modificados. cacheado ~10 ticks."""
@@ -554,16 +546,23 @@ def has_cmd(c):
         _HAS[c] = subprocess.run(["which", c], capture_output=True).returncode == 0
     return _HAS[c]
 
+SOUND_VOL = 1.0   # 0.0–1.0, ajustable en vivo (tecla v); cada reproductor lo aplica
+VOL_LEVELS = [0.2, 0.4, 0.6, 0.8, 1.0]
+
 def play_sound(kind, pid=None):
     if kind == "permission":
         fn = f"perm{(pid or 0) % 6}.wav"
     else:
         fn = f"{kind}.wav"
     path = os.path.join(SND_DIR, fn)
+    v = max(0.0, min(1.0, SOUND_VOL))
     if os.path.exists(path):
         for player in ("paplay", "pw-play", "aplay", "ffplay"):
             if has_cmd(player):
-                cmd = [player, path] if player != "ffplay" else ["ffplay","-nodisp","-autoexit","-loglevel","quiet",path]
+                if player == "paplay":   cmd = [player, f"--volume={int(v*65536)}", path]
+                elif player == "pw-play":cmd = [player, f"--volume={v:.2f}", path]
+                elif player == "ffplay": cmd = ["ffplay","-nodisp","-autoexit","-loglevel","quiet","-volume",str(int(v*100)),path]
+                else:                    cmd = [player, path]   # aplay no soporta volumen
                 try:
                     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); return
                 except Exception: pass
@@ -711,8 +710,11 @@ def _mascot_grid(status, tick):
         _stamp(g, PX["blk_d"], [(1,3),(1,5)])     # cejas inclinadas al centro
         return g
 
-    blink = (status == "idle" and tick % 8 == 0) or (status != "idle" and tick % 7 == 0)
-    if blink:                                     # parpadeo: línea fina
+    if status == "idle":                          # dormido: ojos cerrados (líneas)
+        _stamp(g, eye, [(3,2),(3,3),(3,5),(3,6)])
+        return g
+
+    if tick % 7 == 0:                             # parpadeo: línea fina
         _stamp(g, eye, [(3,2),(3,3),(3,5),(3,6)])
         return g
     if status == "waiting":                       # ojos grandes y alzados (alerta)
@@ -728,10 +730,18 @@ def _mascot_grid(status, tick):
 
 def mascot_face(status, tick):
     g = _mascot_grid(status, tick)
+    # overlay "Zzz" que sube cuando está dormido (reposo), en la fila superior
+    zmap = {}
+    if status == "idle":
+        ph = (tick // 2) % 3
+        seq = ([(8, "z")], [(7, "z"), (8, "Z")], [(6, "z"), (7, "z"), (8, "Z")])[ph]
+        zmap = dict(seq)
     out = []
-    for r in range(0, 6, 2):
+    for ri, r in enumerate(range(0, 6, 2)):
         top, bot, line = g[r], g[r+1], ""
         for c in range(9):
+            if ri == 0 and c in zmap:                       # letra de "Zzz" flotando
+                line += f"{T.cream}{B}{zmap[c]}{RST}"; continue
             tp, bp = top[c], bot[c]
             if tp and bp:  line += f"{bg(*bp)}{fg(*tp)}▀{RST}"
             elif tp:       line += f"{fg(*tp)}▀{RST}"
@@ -771,10 +781,13 @@ class App:
         self.tick = 0; self.sel = 0; self.scroll = 0
         self.show_dead = True; self.compact = False
         self.sound_on = True; self.notif_on = True          # toggles independientes
+        self.vol_i = len(VOL_LEVELS) - 1                     # volumen (índice en VOL_LEVELS)
         self.group = False; self.filter = ""; self.sort_i = 0; self.sort_rev = False
         self.confirm = None; self.msg = ""; self.theme_i = 0
         self.inspect = False
         self.rowpids = []
+        self.click_map = {}; self.click_xmax = 0; self._win_sel = []
+        self.topbar_clicks = []                              # (fila, x0, x1, acción) iconos clickeables
 
     # ════════════ rendering: layout maestro-detalle de dos paneles ════════════
     def render(self):
@@ -798,6 +811,7 @@ class App:
 
         # ----- inspector de pantalla completa (tecla i) -----
         if self.inspect and sel_s:
+            self.topbar_clicks = []; self.click_map = {}
             return self._inspector(sel_s, cols, rows)
         self.inspect = self.inspect and bool(sel_s)
 
@@ -812,6 +826,13 @@ class App:
 
         side = self._sidebar(items, count, wL, body_h)
         det  = self._detail_lines(sel_s, wR) if sel_s else [f"{T.gray}(sin sesiones que mostrar){RST}"]
+
+        # mapa de clicks: fila de terminal (1-indexada) -> selidx en el sidebar
+        self.click_map = {}
+        self.click_xmax = 2 + wL                          # margen + ancho panel izquierdo
+        for i, si in enumerate(getattr(self, "_win_sel", [])):
+            if si is not None:
+                self.click_map[len(top) + i + 1] = si     # body[i] => fila terminal len(top)+i+1
 
         body = []
         div = f"{T.coral_d}│{RST}"
@@ -842,12 +863,27 @@ class App:
                 f"{T.gray}tema:{THEME_NAMES[self.theme_i]}{RST}"]
         if self.group:        info.append(f"{T.purple}⊞grupos{RST}")
         if self.compact:      info.append(f"{T.purple}≡compacto{RST}")
-        if not self.sound_on: info.append(f"{T.yellow}🔇{RST}")
-        if not self.notif_on: info.append(f"{T.yellow}🔕{RST}")
+        # sonido y notif: iconos clickeables (anotamos sus índices para mapear el click)
+        snd_idx = len(info)
+        n = len(VOL_LEVELS); filled = self.vol_i + 1
+        vbar = "▰"*filled + "▱"*(n - filled)
+        info.append(f"{T.teal}🔊 {vbar} {int(self.volume*100)}%{RST}" if self.sound_on else f"{T.yellow}🔇{RST}")
+        ntf_idx = len(info)
+        info.append(f"{T.teal}🔔{RST}" if self.notif_on else f"{T.yellow}🔕{RST}")
         if self.filter:       info.append(f"{T.yellow}/{self.filter}{RST}")
 
+        right = "  ".join(info) + " "
+        # regiones clickeables: la info se alinea a la derecha en la fila 2 (term)
+        base = cols - disp_width(right) + 1
+        off = 0; self.topbar_clicks = []
+        for idx, item in enumerate(info):
+            wi = disp_width(item)
+            if idx == snd_idx: self.topbar_clicks.append((2, base+off, base+off+wi-1, "sound"))
+            if idx == ntf_idx: self.topbar_clicks.append((2, base+off, base+off+wi-1, "notif"))
+            off += wi + 2
+
         row0 = self._lr(f"  {lg[0]}  {title}", f"{T.cream}{clock}{RST} ", cols)
-        row1 = self._lr(f"  {lg[1]}  {q}",     "  ".join(info) + " ", cols)
+        row1 = self._lr(f"  {lg[1]}  {q}",     right, cols)
         row2 = f"  {lg[2]}  " + "   ".join(chips)
         sep  = "  " + f"{T.coral_d}{'─'*(cols-2)}{RST}"
         return [row0, row1, row2, sep]
@@ -878,11 +914,15 @@ class App:
         if topln + card_h > self.scroll + height: self.scroll = topln + card_h - height
         self.scroll = max(0, min(self.scroll, max(0, len(flat) - height)))
 
-        out = [flat[i][1] for i in range(self.scroll, min(len(flat), self.scroll + height))]
+        win = list(range(self.scroll, min(len(flat), self.scroll + height)))
+        out = [flat[i][1] for i in win]
+        # mapa de clicks: por cada línea visible, a qué sesión (selidx) pertenece
+        winsel = [flat[i][0] for i in win]
         # indicadores de scroll (arriba/abajo) sobre la última columna
         if self.scroll > 0 and out:                          out[0]  = self._mark_scroll(out[0],  wL, "▲")
         if self.scroll + height < len(flat) and out:         out[-1] = self._mark_scroll(out[-1], wL, "▼")
-        while len(out) < height: out.append(ccell("", wL, ""))
+        while len(out) < height: out.append(ccell("", wL, "")); winsel.append(None)
+        self._win_sel = winsel
         return out
 
     def _mark_scroll(self, line, wL, ch):
@@ -930,7 +970,7 @@ class App:
         ide = ide_for(s.cwd)
         pane = tmux_pane_of(s.pid) if s.is_alive else ""
         ctx = context_tokens(s.sid); mdl = model_of(s.sid)
-        cost = est_cost(mdl, d.get("sum")); tok = d["tok"]
+        tok = d["tok"]
         started = time.strftime("%H:%M", time.localtime(s.started/1000)) if s.started else "—"
         fc = mascot_face(s.status, self.tick)
         L = []
@@ -949,8 +989,7 @@ class App:
         if tok:
             L.append("  " + fld("turno", f"in {fmt_tokens(tok['inp'])} out {fmt_tokens(tok['out'])} "
                                          f"c↺{fmt_tokens(tok['cr'])} c+{fmt_tokens(tok['cc'])}"))
-        L.append("  " + fld("total", f"in {fmt_tokens(d['total_in'])} out {fmt_tokens(d['total_out'])}"
-                                     + (f"  {T.green}≈US${cost:.2f}{RST}" if cost is not None else "")))
+        L.append("  " + fld("total", f"in {fmt_tokens(d['total_in'])} out {fmt_tokens(d['total_out'])}"))
 
         sec("ACTIVIDAD")
         if s.status == "waiting" and d["pending"]:
@@ -1024,7 +1063,7 @@ class App:
         else:
             keys = [("↵","ir"),("i","pantalla completa"),("↑↓","nav"),("x","matar"),("s/S","orden"),("/","filtro"),
                     ("g","grupos"),("C","compacto"),("c","limpiar"),("t","tema"),
-                    ("m","sonido"),("n","notif"),("d","muertas"),("q","salir")]
+                    ("m","sonido"),("+/-","volumen"),("n","notif"),("d","muertas"),("q","salir")]
         f = " ".join(f"{T.coral}{k}{RST}{DIM}{v}{RST}" for k, v in keys)
         if self.msg:
             return f"{T.yellow}{B}{self.msg}{RST}    " + f
@@ -1064,6 +1103,36 @@ class App:
                         self.msg = f"↪ ventana '{proj}'"; return
             except Exception: pass
         self.msg = "no pude saltar (usá tmux o instalá wmctrl)"
+
+    def click(self, x, y):
+        """click izquierdo: iconos del header (sonido/notif) o, en el sidebar,
+        selecciona la sesión; si ya estaba seleccionada, salta a ella (como Enter)."""
+        for (row, x0, x1, act) in self.topbar_clicks:
+            if y == row and x0 <= x <= x1:
+                if act == "sound": self.sound_on = not self.sound_on
+                elif act == "notif": self.notif_on = not self.notif_on
+                return
+        si = self.click_map.get(y)
+        if si is None or x > self.click_xmax: return
+        if si == self.sel:
+            self.jump()
+        else:
+            self.sel = si
+            if self.sound_on: play_sound("nav")
+
+    @property
+    def volume(self): return VOL_LEVELS[self.vol_i]
+
+    def adjust_volume(self, delta):
+        """sube/baja el volumen un nivel (clamp) y lo previsualiza."""
+        global SOUND_VOL
+        new = max(0, min(len(VOL_LEVELS) - 1, self.vol_i + delta))
+        if new == self.vol_i:
+            return
+        self.vol_i = new
+        SOUND_VOL = self.volume
+        self.msg = f"🔊 volumen {int(self.volume*100)}%"
+        if self.sound_on: play_sound("nav")
 
     def ask_kill(self):
         if self.rowpids: self.confirm = self.rowpids[self.sel]
@@ -1127,7 +1196,9 @@ def run_tui(app):
     import termios, tty
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
-    sys.stdout.write("\x1b[?1049h\x1b[?25l")  # alt screen + hide cursor
+    sys.stdout.write("\x1b[?1049h\x1b[?25l")        # alt screen + hide cursor
+    sys.stdout.write("\x1b[?1000h\x1b[?1006h")      # reporte de mouse (click + rueda, coords SGR)
+    global SOUND_VOL; SOUND_VOL = app.volume
     ensure_sounds()
     if app.sound_on: play_sound("start")
     try:
@@ -1150,6 +1221,18 @@ def run_tui(app):
                 seq = os.read(fd, 2).decode("utf-8","replace")
                 if seq == "[A": nav(-1)
                 elif seq == "[B": nav(1)
+                elif seq == "[<":                                     # mouse (SGR 1006)
+                    buf = ""
+                    while True:
+                        c2 = os.read(fd, 1).decode("utf-8","replace")
+                        if not c2 or c2 in "Mm": break
+                        buf += c2
+                    if c2 == "M":                                     # solo al presionar
+                        try: b, mx, my = (int(v) for v in buf.split(";"))
+                        except Exception: b = -1
+                        if b == 64: nav(-1)                           # rueda arriba
+                        elif b == 65: nav(1)                          # rueda abajo
+                        elif (b & 3) == 0: app.click(mx, my)          # botón izquierdo
                 elif seq == "" and app.inspect: app.inspect = False   # Esc cierra inspector
                 continue
             if ch in ("i","I"): app.inspect = not app.inspect
@@ -1163,6 +1246,8 @@ def run_tui(app):
             elif ch == "C": app.compact = not app.compact
             elif ch == "c": app.clean_dead()
             elif ch in ("m","M"): app.sound_on = not app.sound_on
+            elif ch in ("+","="): app.adjust_volume(+1)
+            elif ch in ("-","_"): app.adjust_volume(-1)
             elif ch in ("n","N"): app.notif_on = not app.notif_on
             elif ch in ("t","T"):
                 app.theme_i = (app.theme_i + 1) % len(THEME_NAMES)
@@ -1179,6 +1264,7 @@ def run_tui(app):
     finally:
         if app.sound_on: play_sound("quit")
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        sys.stdout.write("\x1b[?1000l\x1b[?1006l")      # apagar mouse
         sys.stdout.write("\x1b[?25h\x1b[?1049l"); sys.stdout.flush()
 
 # ───────────────────────── non-interactive ────────────────────────────────
