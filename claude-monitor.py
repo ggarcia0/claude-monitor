@@ -822,16 +822,16 @@ class App:
 
         return top + body + foot
 
-    # ---- barra superior (3 líneas: marca/reloj/cuota · chips · separador) ----
+    # ---- barra superior: logo sunburst animado (3 líneas) + marca/reloj/cuota/chips ----
     def _topbar(self, counts, cols):
-        title = gradient("✦ CLAUDE  MONITOR", self.tick, GRAD_PAL)
+        lg = spark_header(self.tick)                       # logo animado, 3 líneas (ancho 7)
+        title = gradient("C L A U D E   M O N I T O R", self.tick, GRAD_PAL)
         clock = time.strftime("%a %d %b · %H:%M:%S")
         u5, u7 = read_quota()
         q = ""
         if u5 is not None:
             q = (f"{T.gray}5h{RST} {gauge(u5,8)} {T.cream}{int(u5*100)}%{RST}   "
                  f"{T.gray}7d{RST} {gauge(u7,8)} {T.cream}{int(u7*100)}%{RST}")
-        line0 = self._lr(f"  {title}", f"{T.cream}{clock}{RST}   {q} ", cols)
 
         chips = []
         for st in ("waiting","busy","idle","blocked","dead"):
@@ -845,9 +845,12 @@ class App:
         if not self.sound_on: info.append(f"{T.yellow}🔇{RST}")
         if not self.notif_on: info.append(f"{T.yellow}🔕{RST}")
         if self.filter:       info.append(f"{T.yellow}/{self.filter}{RST}")
-        line1 = self._lr("  " + "   ".join(chips), "  ".join(info) + " ", cols)
-        line2 = "  " + f"{T.coral_d}{'─'*(cols-2)}{RST}"
-        return [line0, line1, line2]
+
+        row0 = self._lr(f"  {lg[0]}  {title}", f"{T.cream}{clock}{RST} ", cols)
+        row1 = self._lr(f"  {lg[1]}  {q}",     "  ".join(info) + " ", cols)
+        row2 = f"  {lg[2]}  " + "   ".join(chips)
+        sep  = "  " + f"{T.coral_d}{'─'*(cols-2)}{RST}"
+        return [row0, row1, row2, sep]
 
     # ---- panel izquierdo: tarjetas de sesión con scroll ----
     def _sidebar(self, items, count, wL, height):
