@@ -2,17 +2,19 @@
 # -*- coding: utf-8 -*-
 """
 CLAUDE MONITOR v2 — monitor en vivo de sesiones de Claude Code.
-Reimplementación con UX/UI renovada (layout en tarjetas, alineación real,
-orden y filtrado mejorados). Solo stdlib.
+UI renovada: layout maestro-detalle de dos paneles. A la izquierda, la lista
+de sesiones como tarjetas; a la derecha, el detalle en vivo de la seleccionada
+(contexto, tokens, actividad, conversación, git, identidad). Solo stdlib.
 
 Uso:
     claude-monitor-v2.py [--interval SEG] [--once] [--json] [--status]
 Teclas:
     ↑↓/jk  navegar      Enter  ir a la sesión (tmux/wmctrl)
+    i      pantalla completa (inspector)   Esc  volver
     x      matar (y/n)  s/S    ordenar (campo / invertir)
     /      filtrar      g      agrupar por proyecto
-    C      compacto     c      limpiar muertas
-    m      mute         d      ver/ocultar muertas       q  salir
+    C      compacto     c      limpiar muertas      t  tema
+    m      sonido       n      notif    d  ver/ocultar muertas    q  salir
 """
 import os, sys, re, json, time, glob, signal, select, subprocess
 from collections import deque, defaultdict
@@ -675,6 +677,69 @@ def face(status, tick):
             f"{accent} │ {pad(eyes,3,'^')} │ {RST}",
             f"{accent} ╰ {pad(m,3,'^')} ╯ {RST}"]
 
+# ── mascota pixel-art de Claude (medios bloques: 2 px verticales por carácter) ──
+PX = dict(body=(217,119,87), body_d=(168,86,60), eye=(38,26,22),
+          dead=(120,120,120), dead_d=(90,90,90),
+          blk=(176,72,72), blk_d=(120,48,48), wait=(236,146,102))
+
+def _stamp(g, color, cells):
+    for r, c in cells:
+        if 0 <= r < 6 and 0 <= c < 9: g[r][c] = color
+
+def _mascot_grid(status, tick):
+    """rejilla 9×6 (px). cuerpo + patitas que caminan + ojos según estado."""
+    if status == "dead":   body = PX["dead"]
+    elif status == "blocked": body = PX["blk"]
+    elif status == "waiting": body = PX["wait"]
+    else: body = PX["body"]
+    B = body
+    g = [[None,B,B,B,B,B,B,B,None],
+         [B,B,B,B,B,B,B,B,B],
+         [B,B,B,B,B,B,B,B,B],
+         [B,B,B,B,B,B,B,B,B],
+         [B,B,B,B,B,B,B,B,B],
+         [B,B,None,B,B,B,None,B,B]]
+    eye = PX["eye"]
+    walk = (status == "busy" and tick % 2)        # paso al caminar
+    if walk: g[5] = [B,None,B,B,B,B,B,None,B]
+
+    if status == "dead":                          # ojos en X, sin animación
+        _stamp(g, eye, [(2,2),(3,3),(2,6),(3,5)])
+        return g
+    if status == "blocked":                       # ceño fruncido (enojado)
+        _stamp(g, eye, [(2,2),(2,3),(3,2),(3,3),(2,5),(2,6),(3,5),(3,6)])
+        _stamp(g, PX["blk_d"], [(1,3),(1,5)])     # cejas inclinadas al centro
+        return g
+
+    blink = (status == "idle" and tick % 8 == 0) or (status != "idle" and tick % 7 == 0)
+    if blink:                                     # parpadeo: línea fina
+        _stamp(g, eye, [(3,2),(3,3),(3,5),(3,6)])
+        return g
+    if status == "waiting":                       # ojos grandes y alzados (alerta)
+        _stamp(g, eye, [(1,2),(1,3),(2,2),(2,3),(1,5),(1,6),(2,5),(2,6)])
+        return g
+    # ojos abiertos 2×2; en "busy" la pupila mira de lado
+    look = (tick // 2) % 4 if status == "busy" else 0
+    if look == 1:    cells = [(2,3),(3,3),(2,6),(3,6)]            # mira derecha
+    elif look == 3:  cells = [(2,2),(3,2),(2,5),(3,5)]            # mira izquierda
+    else:            cells = [(2,2),(2,3),(3,2),(3,3),(2,5),(2,6),(3,5),(3,6)]
+    _stamp(g, eye, cells)
+    return g
+
+def mascot_face(status, tick):
+    g = _mascot_grid(status, tick)
+    out = []
+    for r in range(0, 6, 2):
+        top, bot, line = g[r], g[r+1], ""
+        for c in range(9):
+            tp, bp = top[c], bot[c]
+            if tp and bp:  line += f"{bg(*bp)}{fg(*tp)}▀{RST}"
+            elif tp:       line += f"{fg(*tp)}▀{RST}"
+            elif bp:       line += f"{fg(*bp)}▄{RST}"
+            else:          line += " "
+        out.append(line)
+    return out
+
 SPARK_CHARS = "▁▂▃▄▅▆▇"
 def sparkline(pid, width=11):
     h = CA.hist.get(pid)
@@ -711,171 +776,136 @@ class App:
         self.inspect = False
         self.rowpids = []
 
-    # ---- rendering ----
+    # ════════════ rendering: layout maestro-detalle de dos paneles ════════════
     def render(self):
         cols, rows = os.get_terminal_size()
-        cols = max(cols, 76)
-        sessions = collect(self)
-        sessions = sort_sessions(sessions, self.sort_i, self.sort_rev)
+        cols = max(cols, 80); rows = max(rows, 16)
+        sessions = sort_sessions(collect(self), self.sort_i, self.sort_rev)
         counts = defaultdict(int)
         for s in sessions: counts[s.status] += 1
-        n_dead = sum(1 for s in sessions if s.status == "dead")
 
-        # ----- inspector de pantalla completa -----
-        if self.inspect and self.rowpids:
-            pid = self.rowpids[min(self.sel, len(self.rowpids)-1)]
-            s = next((x for x in sessions if x.pid == pid), None)
-            if s: return self._inspector(s, cols, rows)
-            self.inspect = False
-
-        L = []
-        inner = cols - 2
-        sp = spark_header(self.tick)
-        title = gradient("CLAUDE  MONITOR", self.tick, GRAD_PAL)
-        clock = time.strftime("%a %d %b · %H:%M:%S")
-        u5, u7 = read_quota()
-        q = ""
-        if u5 is not None:
-            q = (f"{T.gray}5h{RST} {gauge(u5,8)} {T.cream}{int(u5*100):>2}%{RST}   "
-                 f"{T.gray}7d{RST} {gauge(u7,8)} {T.cream}{int(u7*100):>2}%{RST}")
-
-        # ----- header band -----
-        L.append(f"{T.coral}╭{'─'*inner}╮{RST}")
-        L.append(self._band(sp[0] + "  " + title, inner))
-        L.append(self._band(sp[1] + "  " + f"{T.cream}{clock}{RST}    {q}", inner))
-        # chips
-        chips = []
-        if counts["waiting"]: chips.append(pill("waiting"))
-        chips.append(pill("busy")); chips.append(pill("idle"))
-        if counts["blocked"]: chips.append(pill("blocked"))
-        info = []
-        info.append(f"{T.gray}orden:{SORT_FIELDS[self.sort_i][0]}{'↓' if self.sort_rev else '↑'}{RST}")
-        info.append(f"{T.gray}tema:{THEME_NAMES[self.theme_i]}{RST}")
-        if self.group:        info.append(f"{T.purple}⊞ grupos{RST}")
-        if not self.sound_on: info.append(f"{T.yellow}🔇 sonido{RST}")
-        if not self.notif_on: info.append(f"{T.yellow}🔕 notif{RST}")
-        if self.filter:       info.append(f"{T.yellow}/{self.filter}{RST}")
-        chip_line = "  ".join(chips) + "   " + "  ".join(info)
-        L.append(self._band(sp[2] + "  " + chip_line, inner))
-        L.append(f"{T.coral}╰{'─'*inner}╯{RST}")
-
-        # ----- column header (anchos balanceados) -----
-        W_MARK,W_PID,W_AGE,W_ST,W_HIS,W_CTX = 4,7,6,19,7,6
-        nsep = 9  # un espacio por columna que agrega _cols
-        fixed = W_MARK+W_PID+W_AGE+W_ST+W_HIS+W_CTX + nsep + 2
-        leftover = max(30, cols - fixed)
-        W_NAME = min(34, max(12, int(leftover * 0.32)))
-        W_HAC  = min(44, max(14, int(leftover * 0.40)))
-        W_DIR  = max(10, leftover - W_NAME - W_HAC)
-        L.append("  " + T.coral_d + B + self._cols(
-            ("", W_MARK), ("PID", W_PID), ("NOMBRE", W_NAME), ("EDAD", W_AGE),
-            ("ESTADO", W_ST), ("USO", W_HIS), ("CTX", W_CTX),
-            ("HACIENDO", W_HAC), ("DIRECTORIO", W_DIR)) + RST)
-        L.append("  " + DIM + "─"*inner + RST)
-
-        # ----- rows (group + scroll window) -----
-        panel_h = 0 if self.compact else 7
-        avail = max(1, rows - len(L) - panel_h - 2)   # 2 = stats + footer
-
-        # build display list: items are ('h', text) or ('s', session, sel_index)
+        # items (cabeceras de grupo + sesiones) -> rowpids, clamp de selección
         items = []; self.rowpids = []; last_proj = None
         for s in sessions:
             if self.group:
                 proj = "~" if s.cwd == HOME else os.path.basename(s.cwd) or s.cwd
                 if proj != last_proj:
                     items.append(("h", short_path(s.cwd))); last_proj = proj
-            items.append(("s", s, len(self.rowpids)))
-            self.rowpids.append(s.pid)
-
+            items.append(("s", s, len(self.rowpids))); self.rowpids.append(s.pid)
         count = len(self.rowpids)
         self.sel = 0 if count == 0 else max(0, min(self.sel, count-1))
+        sel_s = next((x for x in sessions if x.pid == self.rowpids[self.sel]), None) if count else None
 
-        # line index of selected session
-        nlines = len(items)
-        indic = nlines > avail
-        if indic: avail = max(1, avail - 1)
-        tgt = next((i for i,it in enumerate(items) if it[0]=="s" and it[2]==self.sel), 0)
-        if tgt < self.scroll: self.scroll = tgt
-        if tgt >= self.scroll + avail: self.scroll = tgt - avail + 1
-        self.scroll = max(0, min(self.scroll, max(0, nlines - avail)))
+        # ----- inspector de pantalla completa (tecla i) -----
+        if self.inspect and sel_s:
+            return self._inspector(sel_s, cols, rows)
+        self.inspect = self.inspect and bool(sel_s)
 
-        if indic:
-            up = " ▲" if self.scroll > 0 else "  "
-            dn = " ▼" if self.scroll + avail < nlines else "  "
-            L.append(f"  {T.gray}[{self.sel+1}/{count}]{up}{dn}{RST}")
+        top  = self._topbar(counts, cols)                 # 3 líneas
+        foot = ["  " + self._statsline([s.pid for s in sessions if s.is_alive]),
+                "  " + self._footer()]
+        body_h = max(3, rows - len(top) - len(foot))
 
-        drawn = 0; vis = 0
-        for it in items[self.scroll:]:
-            if drawn >= avail: break
+        # anchos de los dos paneles
+        wL = min(46, max(28, cols // 3))
+        wR = cols - 4 - wL                                # 2 margen + 1 div + 1 espacio
+
+        side = self._sidebar(items, count, wL, body_h)
+        det  = self._detail_lines(sel_s, wR) if sel_s else [f"{T.gray}(sin sesiones que mostrar){RST}"]
+
+        body = []
+        div = f"{T.coral_d}│{RST}"
+        for i in range(body_h):
+            lc = side[i] if i < len(side) else ccell("", wL, "")
+            rc = ccell(det[i], wR, "") if i < len(det) else ""
+            body.append("  " + lc + div + " " + rc)
+
+        return top + body + foot
+
+    # ---- barra superior (3 líneas: marca/reloj/cuota · chips · separador) ----
+    def _topbar(self, counts, cols):
+        title = gradient("✦ CLAUDE  MONITOR", self.tick, GRAD_PAL)
+        clock = time.strftime("%a %d %b · %H:%M:%S")
+        u5, u7 = read_quota()
+        q = ""
+        if u5 is not None:
+            q = (f"{T.gray}5h{RST} {gauge(u5,8)} {T.cream}{int(u5*100)}%{RST}   "
+                 f"{T.gray}7d{RST} {gauge(u7,8)} {T.cream}{int(u7*100)}%{RST}")
+        line0 = self._lr(f"  {title}", f"{T.cream}{clock}{RST}   {q} ", cols)
+
+        chips = []
+        for st in ("waiting","busy","idle","blocked","dead"):
+            if counts.get(st):
+                m = STATUS[st]
+                chips.append(f"{m['accent']}{B}{m['icon']}{RST} {m['accent']}{m['label'].lower()} {counts[st]}{RST}")
+        info = [f"{T.gray}orden:{SORT_FIELDS[self.sort_i][0]}{'↓' if self.sort_rev else '↑'}{RST}",
+                f"{T.gray}tema:{THEME_NAMES[self.theme_i]}{RST}"]
+        if self.group:        info.append(f"{T.purple}⊞grupos{RST}")
+        if self.compact:      info.append(f"{T.purple}≡compacto{RST}")
+        if not self.sound_on: info.append(f"{T.yellow}🔇{RST}")
+        if not self.notif_on: info.append(f"{T.yellow}🔕{RST}")
+        if self.filter:       info.append(f"{T.yellow}/{self.filter}{RST}")
+        line1 = self._lr("  " + "   ".join(chips), "  ".join(info) + " ", cols)
+        line2 = "  " + f"{T.coral_d}{'─'*(cols-2)}{RST}"
+        return [line0, line1, line2]
+
+    # ---- panel izquierdo: tarjetas de sesión con scroll ----
+    def _sidebar(self, items, count, wL, height):
+        flat = []          # (selidx|None, línea ya padeada a wL)
+        firstline = {}; vis = 0
+        for it in items:
             if it[0] == "h":
-                L.append(f"  {T.purple}{DIM}▾ {pad(short_path(it[1]), inner-4)}{RST}"); drawn += 1; continue
+                flat.append((None, ccell(f"{T.purple}{DIM}▾ {short_path(it[1])}{RST}", wL, "")))
+                continue
             _, s, si = it
             selected = (si == self.sel)
             flashing = (self.tick - CA.changed.get(s.pid, -99)) in (0, 1, 2)
-            if flashing and not selected:
-                fb = STATUS.get(s.status, STATUS["idle"])["bgc"]
-                rb = bg(*(min(255, c + 55) for c in fb))     # destello del color de estado
-            else:
-                rb = T.sel_bg if selected else (T.zebra if vis % 2 else "")
+            if selected:    rb = T.sel_bg
+            elif flashing:  rb = bg(*(min(255, c + 55) for c in STATUS.get(s.status, STATUS["idle"])["bgc"]))
+            else:           rb = T.zebra if vis % 2 else ""
             vis += 1
-            accent = STATUS.get(s.status, STATUS["idle"])["accent"]
-            mk = f"{T.coral_l}{B}▸{RST}" if selected else " "
-            mark_cell = f"{accent}▌{RST}{mk} {mascot(s.status,s.pid,self.tick)}"
-            agecol = T.red+B if (s.status=="waiting" and s.age>30) else T.cream
-            warn = f" {T.red}⚠{RST}" if (s.status=="busy" and s.age>180) else ""
-            ctx = context_tokens(s.sid)
-            ctxcol = T.red if ctx>160000 else T.yellow if ctx>120000 else T.gray
-            name = s.display_name
-            cells = [
-                ccell(mark_cell, W_MARK, rb),
-                tcell(str(s.pid),        W_PID,  T.coral_l, rb),
-                tcell(name,              W_NAME, T.white,    rb),
-                tcell(fmt_age(s.upd),    W_AGE,  agecol,     rb),
-                ccell(pill(s.status),    W_ST,   rb),
-                ccell(sparkline(s.pid, W_HIS), W_HIS, rb),
-                tcell(fmt_tokens(ctx),   W_CTX,  ctxcol,     rb),
-                tcell(s.activity,        W_HAC,  T.cream,    rb),
-                tcell(abbrev_path(s.cwd, W_DIR), W_DIR, T.purple, rb),
-            ]
-            row = f"{rb}  " + f"{rb} ".join(cells)
-            tail = max(0, (cols - 1) - disp_width(row))
-            row += f"{rb}{' '*tail}{RST}{warn}"
-            L.append(row); drawn += 1
+            firstline[si] = len(flat)
+            for ln in self._card(s, selected, wL):
+                flat.append((si, ccell(self._bg(ln, rb), wL, rb)))
 
-        # ----- detail panel -----
-        if not self.compact:
-            L.append("  " + T.coral_d + "─"*inner + RST)
-            if count:
-                s = next((x for x in sessions if x.pid == self.rowpids[self.sel]), None)
-            else:
-                s = None
-            if s:
-                fc = face(s.status, self.tick)
-                g = git_info(s.cwd, self.tick); ps = ps_info(s.pid); mdl = model_of(s.sid)
-                ctx = context_tokens(s.sid)
-                name = s.display_name
-                L.append("  " + fc[0] + "   " +
-                         f"{T.coral_l}{B}PID {s.pid}{RST} {T.gray}{s.kind}{RST}   "
-                         f"{T.cream}{B}❝ {pad(name, inner-34)}{B}❞{RST}")
-                L.append("  " + fc[1] + "   " +
-                         f"{T.teal}git{RST} {pad(g,20)} {T.teal}modelo{RST} {mdl} {T.gray}v{s.ver}{RST}   "
-                         f"{T.teal}cpu/ram{RST} {pad(ps,14)} {T.teal}activa hace{RST} {s.uptime}")
-                L.append("  " + fc[2] + "   " +
-                         f"{T.teal}ctx{RST} {pad(fmt_tokens(ctx),6)} {T.teal}en estado{RST} hace {pad(fmt_age(s.upd),6)} "
-                         f"{T.teal}→{RST} {pill(s.status, big=True)}")
-                L.append("  " + f"{T.teal}dir{RST} {short_path(s.cwd)}")
-                L.append("  " + f"{T.teal}haciendo{RST} {pad(s.activity, inner-12)}")
-                L.append("  " + f"{T.teal}uso{RST}      {sparkline(s.pid, 24)}")
-            else:
-                L.append(f"  {T.gray}(sin sesiones que mostrar){RST}")
-                for _ in range(5): L.append("")
+        # ventana de scroll: mantener visible la tarjeta seleccionada
+        card_h = 1 if self.compact else 2
+        topln = firstline.get(self.sel, 0)
+        if topln < self.scroll: self.scroll = topln
+        if topln + card_h > self.scroll + height: self.scroll = topln + card_h - height
+        self.scroll = max(0, min(self.scroll, max(0, len(flat) - height)))
 
-        # ----- pad + línea de stats del sistema + footer -----
-        while len(L) < rows - 2: L.append("")
-        L = L[:rows-2]
-        L.append("  " + self._statsline([s.pid for s in sessions if s.is_alive]))
-        L.append("  " + self._footer())
-        return L
+        out = [flat[i][1] for i in range(self.scroll, min(len(flat), self.scroll + height))]
+        # indicadores de scroll (arriba/abajo) sobre la última columna
+        if self.scroll > 0 and out:                          out[0]  = self._mark_scroll(out[0],  wL, "▲")
+        if self.scroll + height < len(flat) and out:         out[-1] = self._mark_scroll(out[-1], wL, "▼")
+        while len(out) < height: out.append(ccell("", wL, ""))
+        return out
+
+    def _mark_scroll(self, line, wL, ch):
+        return clip(line, wL-2) + f"{T.coral_l}{ch}{RST} "
+
+    def _card(self, s, selected, wL):
+        accent = STATUS.get(s.status, STATUS["idle"])["accent"]
+        glyph  = mascot(s.status, s.pid, self.tick)
+        arrow  = f"{T.coral_l}{B}▸{RST}" if selected else " "
+        bar    = f"{accent}▌{RST}"
+        name   = s.display_name
+        nm     = f"{T.white}{B}{name}{RST}" if selected else f"{T.cream}{name}{RST}"
+        age    = fmt_age(s.upd)
+        agecol = T.red + B if (s.status == "waiting" and s.age > 30) else T.gray
+        warn   = f"{T.red}⚠ {RST}" if (s.status == "busy" and s.age > 180) else ""
+        ctx    = context_tokens(s.sid)
+        ctxcol = T.red if ctx > 160000 else T.yellow if ctx > 120000 else T.teal
+        left   = f"{bar}{arrow} {glyph} {nm}"
+        if self.compact:
+            right = f"{warn}{ctxcol}{fmt_tokens(ctx)}{RST} {agecol}{age}{RST}"
+            return [self._lr(left, right, wL)]
+        lbl = STATUS.get(s.status, STATUS["idle"])["label"]
+        l1  = self._lr(left, f"{warn}{agecol}{age}{RST}", wL)
+        l2  = (f"   {accent}{lbl}{RST} {T.gray}·{RST} {ctxcol}{fmt_tokens(ctx)}{RST}{T.gray} ctx{RST}"
+               f"  {sparkline(s.pid, 8)}")
+        return [l1, l2]
 
     def _statsline(self, pids):
         cpu, rss, mem, load = pc_stats(pids)
@@ -890,106 +920,106 @@ class App:
             seg += f"{lc}load {load:.2f}{RST}"
         return seg
 
-    def _inspector(self, s, cols, rows):
-        inner = cols - 2
-        d  = session_detail(s.sid)
-        gx = git_extended(s.cwd, self.tick)
+    # ---- contenido de detalle (compartido por panel derecho e inspector) ----
+    def _detail_lines(self, s, w):
+        d   = session_detail(s.sid)
+        gx  = git_extended(s.cwd, self.tick)
         ide = ide_for(s.cwd)
         pane = tmux_pane_of(s.pid) if s.is_alive else ""
-        ctx = context_tokens(s.sid); mdl = model_of(s.sid); ps = ps_info(s.pid)
-        cost = est_cost(mdl, d.get("sum"))
+        ctx = context_tokens(s.sid); mdl = model_of(s.sid)
+        cost = est_cost(mdl, d.get("sum")); tok = d["tok"]
         started = time.strftime("%H:%M", time.localtime(s.started/1000)) if s.started else "—"
-        tok = d["tok"]
+        fc = mascot_face(s.status, self.tick)
         L = []
+        def fld(label, value): return f"{T.teal}{label}{RST} {value}"
+        def sec(t): L.append(""); L.append(f"{T.coral_d}{B}▌ {t}{RST}")
 
-        def field(label, value):
-            return f"{T.teal}{label}{RST} {value}"
-        def row1(*fields):
-            L.append("  " + "    ".join(fields))
-        def section(t):
-            L.append("")
-            L.append(f"  {T.coral_d}{B}▌ {t}{RST}")
+        # cabecera: mascota pixel + nombre + pill + ids
+        L.append(f"{fc[0]}  {T.coral_l}{B}{pad(s.display_name, max(4, w-12))}{RST}")
+        L.append(f"{fc[1]}  {pill(s.status, big=True)}")
+        L.append(f"{fc[2]}  {T.gray}PID {s.pid} · {s.sid[:8] or '—'}{RST}")
 
-        # ---- cabecera ----
-        L.append(f"{T.coral}╭{'─'*inner}╮{RST}")
-        L.append(self._band(gradient(f"INSPECTOR · {s.display_name}", self.tick, GRAD_PAL), inner))
-        L.append(self._band(f"{pill(s.status, big=True)}  {T.gray}PID {s.pid}  ·  {s.sid[:8] or '—'}{RST}", inner))
-        L.append(f"{T.coral}╰{'─'*inner}╯{RST}")
-
-        # ---- identidad ----
-        section("IDENTIDAD")
-        row1(field("tipo", s.kind), field("entrypoint", s.entry or "—"),
-             field("IDE", ide or "—"), field("versión", f"v{s.ver}" if s.ver else "—"))
-        row1(field("sessionId", s.sid or "—"))
-        row1(field("jobId", s.jobid or "—"), field("ubicación", pane or "—"),
-             field("directorio", short_path(s.cwd)))
-
-        # ---- tiempo ----
-        section("TIEMPO")
-        row1(field("iniciada", f"{started}  ({s.uptime})"),
-             field("en estado", f"hace {fmt_age(s.upd)}"),
-             field("estado", pill(s.status, big=True)))
-
-        # ---- tokens / contexto ----
-        section("CONTEXTO Y TOKENS")
+        sec("CONTEXTO Y TOKENS")
         pct = min(100, ctx*100//200000)
-        ctxcol = T.red if pct>=85 else T.yellow if pct>=60 else T.green
-        row1(field("contexto", f"{ctxcol}{fmt_tokens(ctx)}{RST} {gauge(ctx/200000,12)} {ctxcol}{pct}%{RST}"))
+        cc = T.red if pct>=85 else T.yellow if pct>=60 else T.green
+        L.append("  " + fld("contexto", f"{cc}{fmt_tokens(ctx)}{RST} {gauge(ctx/200000, max(6, w-26))} {cc}{pct}%{RST}"))
         if tok:
-            row1(field("último turno", f"in {fmt_tokens(tok['inp'])} · out {fmt_tokens(tok['out'])} · "
-                                       f"caché-r {fmt_tokens(tok['cr'])} · caché-w {fmt_tokens(tok['cc'])}"))
-        row1(field("total sesión", f"in {fmt_tokens(d['total_in'])} · out {fmt_tokens(d['total_out'])}"
-                                    + (f"   {T.green}≈ US${cost:.2f}{RST}" if cost is not None else "")))
+            L.append("  " + fld("turno", f"in {fmt_tokens(tok['inp'])} out {fmt_tokens(tok['out'])} "
+                                         f"c↺{fmt_tokens(tok['cr'])} c+{fmt_tokens(tok['cc'])}"))
+        L.append("  " + fld("total", f"in {fmt_tokens(d['total_in'])} out {fmt_tokens(d['total_out'])}"
+                                     + (f"  {T.green}≈US${cost:.2f}{RST}" if cost is not None else "")))
 
-        # ---- conversación ----
-        section("CONVERSACIÓN")
-        row1(field("modo", d["mode"] or "—"), field("permisos", d["perm"] or "—"),
-             field("turnos", f"{d['n_user']} tú / {d['n_assistant']} claude"),
-             field("modelo", mdl))
-        if d["last_prompt"]:
-            L.append("  " + field("último prompt", f"{T.cream}{pad(d['last_prompt'], inner-18)}{RST}"))
-
-        # ---- actividad ----
-        section("ACTIVIDAD")
+        sec("ACTIVIDAD")
         if s.status == "waiting" and d["pending"]:
-            L.append("  " + field("pide aprobar", f"{T.yellow}{pad(d['pending'], inner-18)}{RST}"))
-        L.append("  " + field("haciendo", f"{T.cream}{pad(s.activity or '—', inner-18)}{RST}"))
+            L.append("  " + fld("aprobar", f"{T.yellow}{pad(d['pending'], w-12)}{RST}"))
+        L.append("  " + fld("haciendo", f"{T.cream}{pad(s.activity or '—', w-12)}{RST}"))
         if d["tools"]:
-            tl = "  ".join(f"{T.purple}{n}{RST}" for n, _ in list(d["tools"])[-6:])
-            L.append("  " + field("últimas tools", tl))
-        L.append("  " + field("uso (24)", sparkline(s.pid, 24)))
+            tl = "  ".join(f"{T.purple}{n}{RST}" for n, _ in list(d["tools"])[-5:])
+            L.append("  " + fld("tools", tl))
+        L.append("  " + fld("uso", sparkline(s.pid, min(24, max(8, w-8)))))
 
-        # ---- git / archivos ----
-        section("GIT")
-        ab = ""
-        if gx["ahead"] or gx["behind"]:
-            ab = f"  {T.yellow}↑{gx['ahead']} ↓{gx['behind']}{RST}"
-        row1(field("último commit", f"{T.cream}{pad(gx['commit'], inner-30)}{RST}{ab}"))
+        sec("CONVERSACIÓN")
+        L.append("  " + fld("modo", f"{d['mode'] or '—'} · {d['perm'] or '—'}"))
+        L.append("  " + fld("turnos", f"{d['n_user']} tú · {d['n_assistant']} claude   {T.gray}{mdl}{RST}"))
+        if d["last_prompt"]:
+            L.append("  " + fld("prompt", f"{T.cream}{pad(d['last_prompt'], w-12)}{RST}"))
+
+        sec("TIEMPO")
+        L.append("  " + fld("iniciada", f"{started} ({s.uptime})"))
+        L.append("  " + fld("en estado", f"hace {fmt_age(s.upd)}"))
+
+        sec("GIT")
+        ab = f"  {T.yellow}↑{gx['ahead']} ↓{gx['behind']}{RST}" if (gx["ahead"] or gx["behind"]) else ""
+        L.append("  " + fld("commit", f"{T.cream}{pad(gx['commit'], w-14)}{RST}{ab}"))
         if gx["files"]:
-            row1(field("modificados", f"{T.gray}{pad(', '.join(gx['files']), inner-18)}{RST}"))
+            L.append("  " + fld("modif.", f"{T.gray}{pad(', '.join(gx['files']), w-12)}{RST}"))
         if d["files"]:
-            row1(field("editados (sesión)", f"{T.gray}{pad(', '.join(d['files']), inner-20)}{RST}"))
+            L.append("  " + fld("editados", f"{T.gray}{pad(', '.join(d['files']), w-12)}{RST}"))
 
-        # relleno + footer
+        sec("IDENTIDAD")
+        L.append("  " + fld("tipo", f"{s.kind}{('  v'+s.ver) if s.ver else ''}"))
+        L.append("  " + fld("IDE", ide or "—"))
+        L.append("  " + fld("ubicación", pane or "—"))
+        L.append("  " + fld("dir", short_path(s.cwd)))
+        return L
+
+    def _inspector(self, s, cols, rows):
+        inner = cols - 2
+        L = [f"{T.coral}╭{'─'*inner}╮{RST}",
+             self._band(gradient(f"INSPECTOR · {s.display_name}", self.tick, GRAD_PAL), inner),
+             f"{T.coral}╰{'─'*inner}╯{RST}"]
+        for ln in self._detail_lines(s, inner - 2):
+            L.append("  " + ln)
         while len(L) < rows - 1: L.append("")
         L = L[:rows-1]
         L.append("  " + self._footer())
         return L
 
+    # ---- utilidades de composición ----
+    def _lr(self, left, right, w):
+        """left a la izquierda, right pegado a la derecha, ancho visible exacto w."""
+        gap = w - disp_width(left) - disp_width(right)
+        if gap < 1:
+            left = clip(left, max(0, w - disp_width(right) - 1))
+            gap = max(1, w - disp_width(left) - disp_width(right))
+        return left + " " * gap + right
+
+    def _bg(self, line, rb):
+        """re-aplica el fondo rb tras cada RST para que el resaltado no se corte."""
+        if not rb: return line
+        return rb + line.replace(RST, RST + rb)
+
     def _band(self, content, inner):
         return f"{T.coral}│{RST} " + pad(content, inner-1) + f"{T.coral}│{RST}"
-
-    def _cols(self, *pairs):
-        return "".join(pad(t, w) + " " for t, w in pairs)
 
     def _footer(self):
         if self.confirm is not None:
             return (f"{bg(150,50,50)}{fg(255,235,235)}{B}"
                     f"  ¿Matar PID {self.confirm}?   (y) sí    (n) no  {RST}")
         if self.inspect:
-            keys = [("i/Esc","volver"),("↑↓","cambiar sesión"),("↵","ir"),("x","matar"),("q","salir")]
+            keys = [("i/Esc","volver"),("↑↓","cambiar"),("↵","ir"),("x","matar"),("q","salir")]
         else:
-            keys = [("↵","ir"),("i","detalle"),("↑↓","nav"),("x","matar"),("s/S","orden"),("/","filtro"),
+            keys = [("↵","ir"),("i","pantalla completa"),("↑↓","nav"),("x","matar"),("s/S","orden"),("/","filtro"),
                     ("g","grupos"),("C","compacto"),("c","limpiar"),("t","tema"),
                     ("m","sonido"),("n","notif"),("d","muertas"),("q","salir")]
         f = " ".join(f"{T.coral}{k}{RST}{DIM}{v}{RST}" for k, v in keys)
