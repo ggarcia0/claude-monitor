@@ -166,6 +166,10 @@ def gradient(text, off, pal):
 
 GRAD_PAL = [(217,119,87),(236,146,102),(246,178,140),(250,214,180),(246,178,140),(236,146,102)]
 
+# rampa del heatmap: cero = transparente; con actividad sube de verde tenue a fuerte
+HEAT_RAMP = [(38,82,46),(56,118,60),(86,160,80),(124,198,102),(162,226,124),(196,248,142)]
+DOW = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
+
 # ───────────────────────── data sources ───────────────────────────────────
 class Cache:
     def __init__(self):
@@ -179,6 +183,7 @@ class Cache:
         self.hist = defaultdict(lambda: deque(maxlen=24))
         self.prev = {}
         self.changed = {}      # pid -> tick del último cambio de estado (flash)
+        self.heat = None; self.heat_t = None   # heatmap global (cacheado por bucket de tiempo)
 
 CA = Cache()
 
@@ -245,6 +250,34 @@ def context_tokens(sid):
             break
     CA.usage[sid] = ctx; CA.usage_mt[sid] = mt
     return ctx
+
+_TS_RE = re.compile(r'"timestamp":"([^"]+)"')
+def usage_heatmap(tick):
+    """{fecha local 'YYYY-MM-DD' -> [24] turnos por hora} de TODOS los transcripts.
+    Escaneo costoso -> cacheado por bucket de ~2 min."""
+    bucket = tick // 120
+    if CA.heat is not None and CA.heat_t == bucket:
+        return CA.heat
+    from datetime import datetime
+    by_dh = defaultdict(lambda: [0]*24)
+    for jf in glob.glob(os.path.join(PROJ_DIR, "*", "*.jsonl")):
+        try:
+            with open(jf, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if '"type":"assistant"' not in line:
+                        continue
+                    mt = _TS_RE.search(line)
+                    if not mt:
+                        continue
+                    try:
+                        dt = datetime.fromisoformat(mt.group(1).replace("Z", "+00:00")).astimezone()
+                    except Exception:
+                        continue
+                    by_dh[dt.strftime("%Y-%m-%d")][dt.hour] += 1
+        except Exception:
+            continue
+    CA.heat = {k: v for k, v in by_dh.items()}; CA.heat_t = bucket
+    return CA.heat
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Create"}
 def session_detail(sid):
@@ -784,7 +817,7 @@ class App:
         self.vol_i = len(VOL_LEVELS) - 1                     # volumen (índice en VOL_LEVELS)
         self.group = False; self.filter = ""; self.sort_i = 0; self.sort_rev = False
         self.confirm = None; self.msg = ""; self.theme_i = 0
-        self.inspect = False
+        self.inspect = False; self.heat = False; self.heat_scroll = 0
         self.rowpids = []
         self.click_map = {}; self.click_xmax = 0; self._win_sel = []
         self.topbar_clicks = []                              # (fila, x0, x1, acción) iconos clickeables
@@ -793,6 +826,12 @@ class App:
     def render(self):
         cols, rows = os.get_terminal_size()
         cols = max(cols, 80); rows = max(rows, 16)
+
+        # ----- heatmap de actividad a pantalla completa (tecla h) -----
+        if self.heat:
+            self.topbar_clicks = []; self.click_map = {}
+            return self._heatmap(cols, rows)
+
         sessions = sort_sessions(collect(self), self.sort_i, self.sort_rev)
         counts = defaultdict(int)
         for s in sessions: counts[s.status] += 1
@@ -1037,6 +1076,87 @@ class App:
         L.append("  " + self._footer())
         return L
 
+    # ---- heatmap por hora: día (filas, navegable ↑↓) × hora del día (columnas) ----
+    def _heatmap(self, cols, rows):
+        from datetime import date, timedelta
+        inner = cols - 2
+        data = usage_heatmap(self.tick)
+        today = date.today()
+        now_h = time.localtime().tm_hour
+        WD = ["lu","ma","mi","ju","vi","sá","do"]
+
+        def hours_of(d): return data.get(d.isoformat(), [0]*24)
+        def parse(s):
+            try: return date(*map(int, s.split("-")))
+            except Exception: return None
+
+        # ventana FIJA de 11 días (7 atrás + 3 adelante) que se desliza al pasado con ↑
+        BACK, FWD = 7, 3
+        dts = [d for d in (parse(k) for k in data) if d]
+        start = min(dts) if dts else today - timedelta(days=BACK)
+        maxoff = max(0, (today - start).days)                      # tope: no ir más allá de los datos
+        off = max(0, min(self.heat_scroll, maxoff)); self.heat_scroll = off
+        ref = today - timedelta(days=off)                          # día de referencia (se mueve al pasado)
+        win = [ref + timedelta(days=o) for o in range(-BACK, FWD + 1)]   # 11 días
+
+        mx = max((max(hours_of(d)) for d in win if d <= today), default=0) or 1
+        def color(v):
+            if v <= 0: return None
+            return HEAT_RAMP[min(len(HEAT_RAMP)-1, int((v/mx)*(len(HEAT_RAMP)-1) + 0.999))]
+
+        lab, totw = 7, 7                                           # etiqueta día / total
+        hrs = list(range(24))
+        colw = max(1, min(4, (inner - lab - totw) // len(hrs)))
+
+        nav_hint = (f"  {T.coral_l}▲ más antiguo{RST}" if off < maxoff else "") + \
+                   (f"  {T.coral_l}▼ más reciente{RST}" if off > 0 else "")
+        L = [f"{T.coral}╭{'─'*inner}╮{RST}",
+             self._band(gradient("MAPA DE CALOR · por hora · 7 días atrás + 3 adelante", self.tick, GRAD_PAL), inner),
+             self._band(f"{T.gray}{win[0].strftime('%d %b')} – {win[-1].strftime('%d %b')}  ·  pico/celda {T.cream}{mx}{RST}{nav_hint}", inner),
+             f"{T.coral}╰{'─'*inner}╯{RST}"]
+
+        # encabezado: horas (etiqueta cada 3 h) + título de total
+        axis = [" "] * (len(hrs) * colw)
+        for h in hrs:
+            if h % 3 == 0:
+                base = h * colw
+                for i, ch in enumerate(f"{h:02d}"):
+                    if base + i < len(axis): axis[base + i] = ch
+        L.append(" "*lab + f"{DIM}{T.gray}" + "".join(axis) + RST + f"{DIM}{T.gray}{pad('total', totw, '>')}{RST}")
+
+        for d in win:
+            is_today = (d == today); dfuture = d > today
+            fc = (T.coral_l+B) if is_today else (DIM+T.gray if dfuture else T.gray)
+            line = f" {fc}{pad(d.strftime('%d')+' '+WD[d.weekday()]+('◀' if is_today else ''), lab-1)}{RST}"
+            hh = hours_of(d)
+            for h in hrs:
+                future = dfuture or (is_today and h > now_h)
+                col = color(hh[h])
+                if is_today and h == now_h:
+                    line += f"{bg(*(col or HEAT_RAMP[0]))}{fg(20,40,24)}{B}{pad('◀', colw, '^')}{RST}"
+                elif future:
+                    line += f"{DIM}{T.gray}{pad('·', colw, '^')}{RST}"
+                elif col:
+                    line += f"{bg(*col)}{' '*colw}{RST}"
+                else:
+                    line += " "*colw
+            tot = sum(hh)
+            tcol = DIM+T.gray if (dfuture or not tot) else T.teal
+            line += f"{tcol}{pad('·' if dfuture else (fmt_tokens(tot) if tot else '—'), totw, '>')}{RST}"
+            L.append(line)
+
+        L.append("")
+        legend = f"  {T.gray}menos{RST} {DIM}{T.gray}··{RST}"
+        for c in HEAT_RAMP: legend += f"{bg(*c)}  {RST}"
+        legend += (f" {T.gray}más{RST}    {T.coral_l}{B}◀{RST} {T.gray}ahora{RST}   "
+                   f"{DIM}{T.gray}·{RST} {T.gray}aún no ocurrió{RST}   {T.coral_l}↑↓{RST}{DIM}{T.gray} días pasados{RST}")
+        L.append(legend)
+
+        while len(L) < rows - 1: L.append("")
+        L = L[:rows-1]
+        L.append("  " + self._footer())
+        return L
+
     # ---- utilidades de composición ----
     def _lr(self, left, right, w):
         """left a la izquierda, right pegado a la derecha, ancho visible exacto w."""
@@ -1058,10 +1178,12 @@ class App:
         if self.confirm is not None:
             return (f"{bg(150,50,50)}{fg(255,235,235)}{B}"
                     f"  ¿Matar PID {self.confirm}?   (y) sí    (n) no  {RST}")
-        if self.inspect:
+        if self.heat:
+            keys = [("h/Esc","volver"),("q","salir")]
+        elif self.inspect:
             keys = [("i/Esc","volver"),("↑↓","cambiar"),("↵","ir"),("x","matar"),("q","salir")]
         else:
-            keys = [("↵","ir"),("i","pantalla completa"),("↑↓","nav"),("x","matar"),("s/S","orden"),("/","filtro"),
+            keys = [("↵","ir"),("i","detalle"),("h","heatmap"),("↑↓","nav"),("x","matar"),("s/S","orden"),("/","filtro"),
                     ("g","grupos"),("C","compacto"),("c","limpiar"),("t","tema"),
                     ("m","sonido"),("+/-","volumen"),("n","notif"),("d","muertas"),("q","salir")]
         f = " ".join(f"{T.coral}{k}{RST}{DIM}{v}{RST}" for k, v in keys)
@@ -1214,6 +1336,10 @@ def run_tui(app):
             if app.confirm is not None:
                 app.do_kill(ch in ("y","Y")); continue
             def nav(delta):
+                if app.heat:                                   # en heatmap: ↑ = días más antiguos
+                    app.heat_scroll = max(0, app.heat_scroll - delta)
+                    if app.sound_on: play_sound("nav")
+                    return
                 new = max(0, app.sel + delta)
                 if new != app.sel and app.sound_on: play_sound("nav")
                 app.sel = new
@@ -1233,9 +1359,11 @@ def run_tui(app):
                         if b == 64: nav(-1)                           # rueda arriba
                         elif b == 65: nav(1)                          # rueda abajo
                         elif (b & 3) == 0: app.click(mx, my)          # botón izquierdo
-                elif seq == "" and app.inspect: app.inspect = False   # Esc cierra inspector
+                elif seq == "" and app.heat: app.heat = False          # Esc cierra heatmap
+                elif seq == "" and app.inspect: app.inspect = False    # Esc cierra inspector
                 continue
-            if ch in ("i","I"): app.inspect = not app.inspect
+            if ch in ("h","H"): app.heat = not app.heat; app.heat_scroll = 0
+            elif ch in ("i","I"): app.inspect = not app.inspect
             elif ch in ("\r","\n"): app.jump()
             elif ch in ("k","K"): nav(-1)
             elif ch in ("j","J"): nav(1)
