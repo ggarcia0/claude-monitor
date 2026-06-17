@@ -973,7 +973,6 @@ class App:
 
         top  = self._topbar(counts, cols)                 # 3 líneas
         foot = ["  " + self._statsline([s.pid for s in sessions if s.is_alive]),
-                "  " + self._legend_line(),
                 "  " + self._footer()]
         body_h = max(3, rows - len(top) - len(foot))
 
