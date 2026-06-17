@@ -16,7 +16,7 @@ Teclas:
     C      compacto     c      limpiar muertas      t  tema
     m      sonido       n      notif    d  ver/ocultar muertas    q  salir
 """
-import os, sys, re, json, time, glob, signal, select, subprocess
+import os, sys, re, json, time, glob, signal, select, subprocess, unicodedata
 from collections import deque, defaultdict
 
 CFG        = os.environ.get("CLAUDE_CONFIG_DIR", os.path.expanduser("~/.claude"))
@@ -199,7 +199,8 @@ def disp_width(s):
             or 0xac00 <= o <= 0xd7a3 or 0xf900 <= o <= 0xfaff
             or 0xfe30 <= o <= 0xfe4f or 0xff00 <= o <= 0xff60
             or 0xffe0 <= o <= 0xffe6 or 0x1f300 <= o <= 0x1faff
-            or 0x20000 <= o <= 0x3fffd):
+            or 0x20000 <= o <= 0x3fffd
+            or unicodedata.east_asian_width(ch) in ("W", "F")):   # emojis/CJK anchos (p.ej. ✅)
             w += 2
         else:
             w += 1
