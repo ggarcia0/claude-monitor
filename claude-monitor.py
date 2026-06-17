@@ -104,7 +104,8 @@ I18N = {
     "ESPERA PERMISO": "AWAITING PERMISSION", "bloqueado": "blocked",
     "trabajando": "working", "en reposo": "idle", "terminada": "ended",
     # campos de orden
-    "estado": "status", "actividad": "activity", "pid": "pid", "directorio": "directory",
+    "estado": "status", "actividad": "activity", "nombre": "name",
+    "pid": "pid", "directorio": "directory",
     # barra superior
     "orden:": "sort:", "tema:": "theme:", "idioma:": "lang:",
     "grupos": "groups", "compacto": "compact",
@@ -785,6 +786,7 @@ def collect(app):
 
 SORT_FIELDS = [("estado", lambda s:(s.meta["rank"], s.pid)),
                ("actividad", lambda s:-s.upd),
+               ("nombre", lambda s:s.display_name.lower()),
                ("pid", lambda s:s.pid),
                ("directorio", lambda s:s.cwd.lower())]
 
@@ -1013,28 +1015,26 @@ class App:
             if counts.get(st):
                 m = STATUS[st]
                 chips.append(f"{m['accent']}{B}{m['icon']}{RST} {m['accent']}{tr(m['label']).lower()} {counts[st]}{RST}")
-        info = [f"{T.gray}🔀 {tr(SORT_FIELDS[self.sort_i][0])}{'↓' if self.sort_rev else '↑'}{RST}",
-                f"{T.gray}🎨 {THEME_NAMES[self.theme_i]}{RST}",
-                f"{T.gray}🌐 {LANG}{RST}"]
-        if self.group:        info.append(f"{T.purple}⊞{tr('grupos')}{RST}")
-        if self.compact:      info.append(f"{T.purple}≡{tr('compacto')}{RST}")
-        # sonido y notif: iconos clickeables (anotamos sus índices para mapear el click)
-        snd_idx = len(info)
+        # cada item: (texto, acción-de-click o None). Casi todos son clickeables.
+        items = [(f"{T.gray}↓↑ {tr(SORT_FIELDS[self.sort_i][0])}{'↓' if self.sort_rev else '↑'}{RST}", "sort"),
+                 (f"{T.gray}🎨 {THEME_NAMES[self.theme_i]}{RST}", "theme"),
+                 (f"{T.gray}🌐 {LANG}{RST}", "lang")]
+        if self.group:        items.append((f"{T.purple}⊞{tr('grupos')}{RST}", "group"))
+        if self.compact:      items.append((f"{T.purple}≡{tr('compacto')}{RST}", "compact"))
         n = len(VOL_LEVELS); filled = self.vol_i + 1
         vbar = "▰"*filled + "▱"*(n - filled)
-        info.append(f"{T.teal}🔊 {vbar} {int(self.volume*100)}%{RST}" if self.sound_on else f"{T.yellow}🔇{RST}")
-        ntf_idx = len(info)
-        info.append(f"{T.teal}🔔{RST}" if self.notif_on else f"{T.yellow}🔕{RST}")
-        if self.filter:       info.append(f"{T.yellow}/{self.filter}{RST}")
+        items.append((f"{T.teal}🔊 {vbar} {int(self.volume*100)}%{RST}" if self.sound_on else f"{T.yellow}🔇{RST}", "sound"))
+        items.append((f"{T.teal}🔔{RST}" if self.notif_on else f"{T.yellow}🔕{RST}", "notif"))
+        if self.filter:       items.append((f"{T.yellow}/{self.filter}{RST}", None))
 
+        info = [it[0] for it in items]
         right = "  ".join(info) + " "
         # regiones clickeables: la info se alinea a la derecha en la fila 2 (term)
         base = cols - disp_width(right) + 1
         off = 0; self.topbar_clicks = []
-        for idx, item in enumerate(info):
+        for (item, act) in items:
             wi = disp_width(item)
-            if idx == snd_idx: self.topbar_clicks.append((2, base+off, base+off+wi-1, "sound"))
-            if idx == ntf_idx: self.topbar_clicks.append((2, base+off, base+off+wi-1, "notif"))
+            if act: self.topbar_clicks.append((2, base+off, base+off+wi-1, act))
             off += wi + 2
 
         row0 = self._lr(f"  {lg[0]}  {title}", f"{T.cream}{clock}{RST} ", cols)
@@ -1411,6 +1411,15 @@ class App:
             if y == row and x0 <= x <= x1:
                 if act == "sound": self.sound_on = not self.sound_on
                 elif act == "notif": self.notif_on = not self.notif_on
+                elif act == "sort": self.sort_i = (self.sort_i + 1) % len(SORT_FIELDS)
+                elif act == "theme":
+                    self.theme_i = (self.theme_i + 1) % len(THEME_NAMES)
+                    apply_theme(THEME_NAMES[self.theme_i])
+                elif act == "lang":
+                    global LANG
+                    LANG = "en" if LANG == "es" else "es"
+                elif act == "group": self.group = not self.group
+                elif act == "compact": self.compact = not self.compact
                 return
         si = self.click_map.get(y)
         if si is None or x > self.click_xmax: return
