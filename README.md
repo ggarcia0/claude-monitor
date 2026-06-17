@@ -8,10 +8,18 @@ haciendo cada sesión, cuáles esperan permiso, su uso de contexto, git, CPU/RAM
 
 ## Características
 
-- **Estados en vivo**: trabajando · en reposo · espera permiso · bloqueado · terminada.
+- **Layout maestro-detalle de dos paneles**: a la izquierda la lista de sesiones como
+  tarjetas; a la derecha el detalle en vivo de la seleccionada (contexto, tokens,
+  actividad, conversación, git, identidad).
+- **Estados en vivo**: trabajando · en reposo · espera permiso · bloqueado · terminada,
+  con leyenda y ayuda (`?`).
 - **Nombre de sesión** (`--name`, título auto-generado, o carpeta), actividad actual y directorio.
 - **Uso de contexto (CTX)** por sesión, con aviso al acercarse al límite.
-- **git** (rama + cambios), **CPU/RAM**, **modelo** y **uptime** de cada sesión.
+- **Modelo de Claude** en uso, destacado en el detalle de cada sesión.
+- **Aviso de cuelgue** (`⚠ sin avances`) cuando una sesión lleva >3 min trabajando sin
+  cambiar de estado, tanto en la tarjeta como en el detalle.
+- **Heatmap de actividad** por hora del día (tecla `h`).
+- **git** (rama + cambios), **CPU/RAM** y **uptime** de cada sesión.
 - **Cuota** de tokens 5h / 7d con barras.
 - **Sparkline de actividad** (USO) por sesión.
 - **Alertas**: notificaciones de escritorio (con el logo de Claude) + sonidos chiptune
@@ -44,6 +52,9 @@ claude-monitor
 |---|---|
 | `↑↓` / `j` `k` | navegar |
 | `Enter` | ir a la sesión (tmux / ventana) |
+| `i` | detalle a pantalla completa (inspector) |
+| `h` | heatmap de actividad por hora |
+| `?` | ayuda / leyenda de estados e iconos |
 | `x` | matar la sesión seleccionada (con confirmación) |
 | `s` / `S` | cambiar campo de orden / invertir |
 | `/` | filtrar |
