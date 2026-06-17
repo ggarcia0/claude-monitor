@@ -77,6 +77,110 @@ MASCOT = {
     "blocked": "■□", "dead": "✝✝",
 }
 
+# ───────────────────────── i18n (es / en) ─────────────────────────────────
+def _detect_lang():
+    """idioma de la interfaz: CLAUDE_MON_LANG > locale del sistema > inglés."""
+    v = (os.environ.get("CLAUDE_MON_LANG") or "").lower()
+    if v in ("es", "en"):
+        return v
+    # locale del SO (LC_ALL/LC_MESSAGES/LANG); español si arranca con 'es', si no inglés
+    loc = ""
+    for var in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        if os.environ.get(var):
+            loc = os.environ[var].lower(); break
+    if not loc:
+        try:
+            import locale
+            loc = (locale.getlocale()[0] or locale.getdefaultlocale()[0] or "").lower()
+        except Exception:
+            loc = ""
+    return "es" if loc.startswith("es") else "en"
+
+LANG = _detect_lang()
+
+# tabla español -> inglés; tr() devuelve el español tal cual o su traducción
+I18N = {
+    # estados (etiquetas de STATUS)
+    "ESPERA PERMISO": "AWAITING PERMISSION", "bloqueado": "blocked",
+    "trabajando": "working", "en reposo": "idle", "terminada": "ended",
+    # campos de orden
+    "estado": "status", "actividad": "activity", "pid": "pid", "directorio": "directory",
+    # barra superior
+    "orden:": "sort:", "tema:": "theme:", "idioma:": "lang:",
+    "grupos": "groups", "compacto": "compact",
+    # stats del sistema
+    "Sistema:": "System:",
+    # secciones del detalle
+    "CONTEXTO Y TOKENS": "CONTEXT & TOKENS", "ACTIVIDAD": "ACTIVITY",
+    "CONVERSACIÓN": "CONVERSATION", "TIEMPO": "TIME", "IDENTIDAD": "IDENTITY",
+    # campos del detalle
+    "contexto": "context", "turno": "turn", "total": "total", "aviso": "warning",
+    "aprobar": "approve", "haciendo": "doing", "uso": "usage", "modelo": "model",
+    "modo": "mode", "turnos": "turns", "prompt": "prompt", "iniciada": "started",
+    "en estado": "in state", "commit": "commit", "modif.": "modif.",
+    "editados": "edited", "tipo": "type", "ubicación": "location", "dir": "dir",
+    "tú": "you", "sin avances": "no progress", "(¿colgada?)": "(stuck?)",
+    # leyenda
+    "estados:": "states:",
+    # ayuda
+    "AYUDA · LEYENDA DE ESTADOS E ICONOS": "HELP · STATUS & ICON LEGEND",
+    "Estados de sesión": "Session states",
+    "esperando que confirmes un permiso (¡requiere tu atención!)":
+        "waiting for you to confirm a permission (needs your attention!)",
+    "bloqueada por un error o esperando una dependencia":
+        "blocked by an error or waiting on a dependency",
+    "ejecutando una tarea ahora mismo": "running a task right now",
+    "viva pero sin actividad reciente": "alive but no recent activity",
+    "el proceso terminó": "the process ended",
+    "Alertas e indicadores": "Alerts & indicators",
+    "sesión trabajando >3 min sin cambiar de estado (¿colgada?)":
+        "session working >3 min without changing state (stuck?)",
+    "edad en rojo": "age in red", "lleva >30 s esperando permiso":
+        "awaiting permission for >30 s",
+    "hay más sesiones arriba/abajo (scroll)": "more sessions above/below (scroll)",
+    "La mascota": "The mascot",
+    "su cara y postura reflejan el estado: alerta cuando espera permiso,":
+        "its face and posture reflect the state: alert when awaiting permission,",
+    "activa cuando trabaja, y dormida (zzz) cuando está en reposo.":
+        "active when working, and asleep (zzz) when idle.",
+    "Atajos de teclado": "Keyboard shortcuts",
+    "navegar": "navigate", "ir a la sesión (tmux/ventana)": "go to session (tmux/window)",
+    "detalle a pantalla completa": "full-screen detail",
+    "mapa de calor de actividad": "activity heatmap", "matar sesión": "kill session",
+    "ordenar / invertir": "sort / reverse", "filtrar": "filter",
+    "agrupar por proyecto": "group by project", "modo compacto": "compact mode",
+    "limpiar muertas": "clear dead", "cambiar tema": "change theme", "sonido": "sound",
+    "volumen": "volume", "notificaciones": "notifications",
+    "ver/ocultar muertas": "show/hide dead", "esta ayuda": "this help", "salir": "quit",
+    "cambiar idioma (es/en)": "toggle language (es/en)",
+    # heatmap
+    "MAPA DE CALOR · por hora · 7 días atrás + 3 adelante":
+        "HEATMAP · hourly · 7 days back + 3 ahead",
+    "pico/celda": "peak/cell", "más antiguo": "older", "más reciente": "newer",
+    "menos": "less", "más": "more", "ahora": "now", "aún no ocurrió": "not yet",
+    "días pasados": "past days",
+    # footer (etiquetas cortas)
+    "volver": "back", "cambiar": "switch", "ir": "go", "matar": "kill",
+    "ayuda": "help", "detalle": "detail", "nav": "nav", "orden": "sort",
+    "filtro": "filter", "limpiar": "clear", "tema": "theme", "notif": "notif",
+    "muertas": "dead", "idioma": "lang",
+    # mensajes
+    "ventana": "window", "no pude saltar (usá tmux o instalá wmctrl)":
+        "couldn't jump (use tmux or install wmctrl)", "cancelado": "cancelled",
+    # notificaciones
+    "espera permiso": "awaiting permission", "una acción": "an action",
+    "La sesión quedó bloqueada (¿límite de uso?)":
+        "The session got blocked (usage limit?)",
+    "tarea terminada": "task done", "Listo.": "Done.",
+}
+
+def tr(s):
+    return s if LANG == "es" else I18N.get(s, s)
+
+def ago(a):
+    """edad con el orden de palabras correcto: 'hace 5m' / '5m ago'."""
+    return f"{a} ago" if LANG == "en" else f"hace {a}"
+
 VS15 = "︎"          # fuerza presentación de texto (1 columna) en glifos tipo emoji
 WARN = "⚠" + VS15   # icono de aviso, ancho estable = 1
 
@@ -654,18 +758,18 @@ def collect(app):
                 loc = short_path(s.cwd); tag = f"claude-{s.pid}"
                 if s.status == "waiting":
                     if snd: play_sound("permission", s.pid)
-                    if ntf: notify(f"🔐 {ident} · espera permiso",
-                                   f"Pide aprobar: {s.wf or 'una acción'}\n📁 {loc}",
+                    if ntf: notify(f"🔐 {ident} · {tr('espera permiso')}",
+                                   f"{'Asks to approve' if LANG=='en' else 'Pide aprobar'}: {s.wf or tr('una acción')}\n📁 {loc}",
                                    urgency="critical", tag=tag, timeout=0, category="im.received")
                 elif s.status == "blocked":
                     if snd: play_sound("blocked")
-                    if ntf: notify(f"🚫 {ident} · bloqueado",
-                                   f"La sesión quedó bloqueada (¿límite de uso?)\n📁 {loc}",
+                    if ntf: notify(f"🚫 {ident} · {tr('bloqueado')}",
+                                   f"{tr('La sesión quedó bloqueada (¿límite de uso?)')}\n📁 {loc}",
                                    urgency="critical", tag=tag, timeout=0)
                 elif pv == "busy" and s.status == "idle":
                     if snd: play_sound("done")
-                    if ntf: notify(f"✅ {ident} · tarea terminada",
-                                   f"{s.activity or 'Listo.'}\n📁 {loc}",
+                    if ntf: notify(f"✅ {ident} · {tr('tarea terminada')}",
+                                   f"{s.activity or tr('Listo.')}\n📁 {loc}",
                                    urgency="normal", tag=tag, timeout=6000, category="transfer.complete")
         CA.prev[s.pid] = s.status
         lvl = {"busy":6,"waiting":3,"blocked":1,"idle":1}.get(s.status, 0)
@@ -808,7 +912,7 @@ def gauge(frac, width):
 def pill(status, big=False):
     m = STATUS.get(status, STATUS["idle"])
     r,g,b = m["bgc"]; fr,fgg,fb = m["fgc"]
-    txt = f"{m['icon']} {m['label']}"
+    txt = f"{m['icon']} {tr(m['label'])}"
     return f"{bg(r,g,b)}{fg(fr,fgg,fb)}{B} {txt} {RST}"
 
 # ───────────────────────── application ────────────────────────────────────
@@ -908,11 +1012,12 @@ class App:
         for st in ("waiting","busy","idle","blocked","dead"):
             if counts.get(st):
                 m = STATUS[st]
-                chips.append(f"{m['accent']}{B}{m['icon']}{RST} {m['accent']}{m['label'].lower()} {counts[st]}{RST}")
-        info = [f"{T.gray}orden:{SORT_FIELDS[self.sort_i][0]}{'↓' if self.sort_rev else '↑'}{RST}",
-                f"{T.gray}tema:{THEME_NAMES[self.theme_i]}{RST}"]
-        if self.group:        info.append(f"{T.purple}⊞grupos{RST}")
-        if self.compact:      info.append(f"{T.purple}≡compacto{RST}")
+                chips.append(f"{m['accent']}{B}{m['icon']}{RST} {m['accent']}{tr(m['label']).lower()} {counts[st]}{RST}")
+        info = [f"{T.gray}🔀 {tr(SORT_FIELDS[self.sort_i][0])}{'↓' if self.sort_rev else '↑'}{RST}",
+                f"{T.gray}🎨 {THEME_NAMES[self.theme_i]}{RST}",
+                f"{T.gray}🌐 {LANG}{RST}"]
+        if self.group:        info.append(f"{T.purple}⊞{tr('grupos')}{RST}")
+        if self.compact:      info.append(f"{T.purple}≡{tr('compacto')}{RST}")
         # sonido y notif: iconos clickeables (anotamos sus índices para mapear el click)
         snd_idx = len(info)
         n = len(VOL_LEVELS); filled = self.vol_i + 1
@@ -997,9 +1102,9 @@ class App:
         if self.compact:
             right = f"{warn}{ctxcol}{fmt_tokens(ctx)}{RST} {agecol}{age}{RST}"
             return [self._lr(left, right, wL)]
-        lbl = m["label"]
+        lbl = tr(m["label"])
         l1  = self._lr(left, f"{warn}{agecol}{age}{RST}", wL)
-        alert = f"  {T.red}{WARN} sin avances{RST}" if warned else ""
+        alert = f"  {T.red}{WARN} {tr('sin avances')}{RST}" if warned else ""
         l2  = (f"   {accent}{lbl}{RST} {T.gray}·{RST} {ctxcol}{fmt_tokens(ctx)}{RST}{T.gray} ctx{RST}"
                f"  {sparkline(s.pid, 8)}{alert}")
         return [l1, l2]
@@ -1008,7 +1113,7 @@ class App:
         cpu, rss, mem, load = pc_stats(pids)
         seg = (f"{T.coral_d}🖥 PC{RST}  "
                f"{T.gray}Claude:{RST} {T.teal}{cpu:.0f}% cpu{RST} {T.gray}·{RST} {T.teal}{fmt_mb(rss)}{RST}   "
-               f"{T.gray}Sistema:{RST} ")
+               f"{T.gray}{tr('Sistema:')}{RST} ")
         if mem is not None:
             mc = T.red if mem >= 85 else T.yellow if mem >= 65 else T.green
             seg += f"{mc}RAM {mem:.0f}%{RST} {T.gray}·{RST} "
@@ -1028,8 +1133,8 @@ class App:
         started = time.strftime("%H:%M", time.localtime(s.started/1000)) if s.started else "—"
         fc = mascot_face(s.status, self.tick)
         L = []
-        def fld(label, value): return f"{T.teal}{label}{RST} {value}"
-        def sec(t): L.append(""); L.append(f"{T.coral_d}{B}▌ {t}{RST}")
+        def fld(label, value): return f"{T.teal}{tr(label)}{RST} {value}"
+        def sec(t): L.append(""); L.append(f"{T.coral_d}{B}▌ {tr(t)}{RST}")
 
         # cabecera: mascota pixel + nombre + pill + ids
         L.append(f"{fc[0]}  {T.coral_l}{B}{pad(s.display_name, max(4, w-12))}{RST}")
@@ -1047,7 +1152,7 @@ class App:
 
         sec("ACTIVIDAD")
         if s.status == "busy" and s.age > 180:
-            L.append("  " + fld("aviso", f"{T.red}{B}{WARN} sin avances hace {fmt_age(s.upd)} (¿colgada?){RST}"))
+            L.append("  " + fld("aviso", f"{T.red}{B}{WARN} {tr('sin avances')} {ago(fmt_age(s.upd))} {tr('(¿colgada?)')}{RST}"))
         if s.status == "waiting" and d["pending"]:
             L.append("  " + fld("aprobar", f"{T.yellow}{pad(d['pending'], w-12)}{RST}"))
         L.append("  " + fld("haciendo", f"{T.cream}{pad(s.activity or '—', w-12)}{RST}"))
@@ -1059,13 +1164,13 @@ class App:
         sec("CONVERSACIÓN")
         L.append("  " + fld("modelo", f"{T.purple}{B}{mdl or '—'}{RST}"))
         L.append("  " + fld("modo", f"{d['mode'] or '—'} · {d['perm'] or '—'}"))
-        L.append("  " + fld("turnos", f"{d['n_user']} tú · {d['n_assistant']} claude"))
+        L.append("  " + fld("turnos", f"{d['n_user']} {tr('tú')} · {d['n_assistant']} claude"))
         if d["last_prompt"]:
             L.append("  " + fld("prompt", f"{T.cream}{pad(d['last_prompt'], w-12)}{RST}"))
 
         sec("TIEMPO")
         L.append("  " + fld("iniciada", f"{started} ({s.uptime})"))
-        L.append("  " + fld("en estado", f"hace {fmt_age(s.upd)}"))
+        L.append("  " + fld("en estado", ago(fmt_age(s.upd))))
 
         sec("GIT")
         ab = f"  {T.yellow}↑{gx['ahead']} ↓{gx['behind']}{RST}" if (gx["ahead"] or gx["behind"]) else ""
@@ -1100,17 +1205,17 @@ class App:
         parts = []
         for st in ("waiting","busy","idle","blocked","dead"):
             m = STATUS[st]
-            parts.append(f"{m['accent']}{m['icon']}{RST}{DIM} {m['label'].lower()}{RST}")
-        parts.append(f"{T.red}{WARN}{RST}{DIM} sin avances{RST}")
-        return f"{T.gray}{DIM}estados:{RST} " + f"{T.gray} · {RST}".join(parts)
+            parts.append(f"{m['accent']}{m['icon']}{RST}{DIM} {tr(m['label']).lower()}{RST}")
+        parts.append(f"{T.red}{WARN}{RST}{DIM} {tr('sin avances')}{RST}")
+        return f"{T.gray}{DIM}{tr('estados:')}{RST} " + f"{T.gray} · {RST}".join(parts)
 
     def _help(self, cols, rows):
         inner = cols - 2
         L = [f"{T.coral}╭{'─'*inner}╮{RST}",
-             self._band(gradient("AYUDA · LEYENDA DE ESTADOS E ICONOS", self.tick, GRAD_PAL), inner),
+             self._band(gradient(tr("AYUDA · LEYENDA DE ESTADOS E ICONOS"), self.tick, GRAD_PAL), inner),
              f"{T.coral}╰{'─'*inner}╯{RST}", ""]
 
-        L.append(f"  {T.cream}{B}Estados de sesión{RST}")
+        L.append(f"  {T.cream}{B}{tr('Estados de sesión')}{RST}")
         descr = {
             "waiting": "esperando que confirmes un permiso (¡requiere tu atención!)",
             "blocked": "bloqueada por un error o esperando una dependencia",
@@ -1120,26 +1225,26 @@ class App:
         }
         for st in ("waiting","busy","idle","blocked","dead"):
             m = STATUS[st]
-            L.append(f"    {m['accent']}{B}{m['icon']}{RST}  {m['accent']}{pad(m['label'].lower(), 16)}{RST}"
-                     f"{T.gray}{descr[st]}{RST}")
+            L.append(f"    {m['accent']}{B}{m['icon']}{RST}  {m['accent']}{pad(tr(m['label']).lower(), 16)}{RST}"
+                     f"{T.gray}{tr(descr[st])}{RST}")
 
-        L += ["", f"  {T.cream}{B}Alertas e indicadores{RST}",
-              f"    {T.red}{B}{WARN}{RST}  {pad('aviso', 16)}{T.gray}sesión trabajando >3 min sin cambiar de estado (¿colgada?){RST}",
-              f"    {T.red}{B}●{RST}  {pad('edad en rojo', 16)}{T.gray}lleva >30 s esperando permiso{RST}",
-              f"    {T.coral_l}▲▼{RST} {pad('', 15)}{T.gray}hay más sesiones arriba/abajo (scroll){RST}"]
+        L += ["", f"  {T.cream}{B}{tr('Alertas e indicadores')}{RST}",
+              f"    {T.red}{B}{WARN}{RST}  {pad(tr('aviso'), 16)}{T.gray}{tr('sesión trabajando >3 min sin cambiar de estado (¿colgada?)')}{RST}",
+              f"    {T.red}{B}●{RST}  {pad(tr('edad en rojo'), 16)}{T.gray}{tr('lleva >30 s esperando permiso')}{RST}",
+              f"    {T.coral_l}▲▼{RST} {pad('', 15)}{T.gray}{tr('hay más sesiones arriba/abajo (scroll)')}{RST}"]
 
-        L += ["", f"  {T.cream}{B}La mascota{RST}",
-              f"    {T.gray}su cara y postura reflejan el estado: alerta cuando espera permiso,{RST}",
-              f"    {T.gray}activa cuando trabaja, y dormida (zzz) cuando está en reposo.{RST}"]
+        L += ["", f"  {T.cream}{B}{tr('La mascota')}{RST}",
+              f"    {T.gray}{tr('su cara y postura reflejan el estado: alerta cuando espera permiso,')}{RST}",
+              f"    {T.gray}{tr('activa cuando trabaja, y dormida (zzz) cuando está en reposo.')}{RST}"]
 
-        L += ["", f"  {T.cream}{B}Atajos de teclado{RST}"]
+        L += ["", f"  {T.cream}{B}{tr('Atajos de teclado')}{RST}"]
         keys = [("↑↓ / j k","navegar"),("Enter","ir a la sesión (tmux/ventana)"),("i","detalle a pantalla completa"),
                 ("h","mapa de calor de actividad"),("x","matar sesión"),("s / S","ordenar / invertir"),
                 ("/","filtrar"),("g","agrupar por proyecto"),("C","modo compacto"),("c","limpiar muertas"),
-                ("t","cambiar tema"),("m","sonido"),("+/-","volumen"),("n","notificaciones"),
+                ("t","cambiar tema"),("L","cambiar idioma (es/en)"),("m","sonido"),("+/-","volumen"),("n","notificaciones"),
                 ("d","ver/ocultar muertas"),("?","esta ayuda"),("q","salir")]
         for k, v in keys:
-            L.append(f"    {T.coral}{B}{pad(k, 12)}{RST}{T.gray}{v}{RST}")
+            L.append(f"    {T.coral}{B}{pad(k, 12)}{RST}{T.gray}{tr(v)}{RST}")
 
         while len(L) < rows - 1: L.append("")
         L = L[:rows-1]
@@ -1152,7 +1257,7 @@ class App:
         data = usage_heatmap(self.tick)
         today = date.today()
         now_h = time.localtime().tm_hour
-        WD = ["lu","ma","mi","ju","vi","sá","do"]
+        WD = ["lu","ma","mi","ju","vi","sá","do"] if LANG == "es" else ["mo","tu","we","th","fr","sa","su"]
 
         def hours_of(d): return data.get(d.isoformat(), [0]*24)
         def parse(s):
@@ -1177,11 +1282,11 @@ class App:
         hrs = list(range(24))
         colw = max(1, min(4, (inner - lab - totw) // len(hrs)))
 
-        nav_hint = (f"  {T.coral_l}▲ más antiguo{RST}" if off < maxoff else "") + \
-                   (f"  {T.coral_l}▼ más reciente{RST}" if off > 0 else "")
+        nav_hint = (f"  {T.coral_l}▲ {tr('más antiguo')}{RST}" if off < maxoff else "") + \
+                   (f"  {T.coral_l}▼ {tr('más reciente')}{RST}" if off > 0 else "")
         L = [f"{T.coral}╭{'─'*inner}╮{RST}",
-             self._band(gradient("MAPA DE CALOR · por hora · 7 días atrás + 3 adelante", self.tick, GRAD_PAL), inner),
-             self._band(f"{T.gray}{win[0].strftime('%d %b')} – {win[-1].strftime('%d %b')}  ·  pico/celda {T.cream}{mx}{RST}{nav_hint}", inner),
+             self._band(gradient(tr("MAPA DE CALOR · por hora · 7 días atrás + 3 adelante"), self.tick, GRAD_PAL), inner),
+             self._band(f"{T.gray}{win[0].strftime('%d %b')} – {win[-1].strftime('%d %b')}  ·  {tr('pico/celda')} {T.cream}{mx}{RST}{nav_hint}", inner),
              f"{T.coral}╰{'─'*inner}╯{RST}"]
 
         # encabezado: horas (etiqueta cada 3 h) + título de total
@@ -1191,7 +1296,7 @@ class App:
                 base = h * colw
                 for i, ch in enumerate(f"{h:02d}"):
                     if base + i < len(axis): axis[base + i] = ch
-        L.append(" "*lab + f"{DIM}{T.gray}" + "".join(axis) + RST + f"{DIM}{T.gray}{pad('total', totw, '>')}{RST}")
+        L.append(" "*lab + f"{DIM}{T.gray}" + "".join(axis) + RST + f"{DIM}{T.gray}{pad(tr('total'), totw, '>')}{RST}")
 
         for d in win:
             is_today = (d == today); dfuture = d > today
@@ -1215,10 +1320,10 @@ class App:
             L.append(line)
 
         L.append("")
-        legend = f"  {T.gray}menos{RST} {DIM}{T.gray}··{RST}"
+        legend = f"  {T.gray}{tr('menos')}{RST} {DIM}{T.gray}··{RST}"
         for c in HEAT_RAMP: legend += f"{bg(*c)}  {RST}"
-        legend += (f" {T.gray}más{RST}    {T.coral_l}{B}◀{RST} {T.gray}ahora{RST}   "
-                   f"{DIM}{T.gray}·{RST} {T.gray}aún no ocurrió{RST}   {T.coral_l}↑↓{RST}{DIM}{T.gray} días pasados{RST}")
+        legend += (f" {T.gray}{tr('más')}{RST}    {T.coral_l}{B}◀{RST} {T.gray}{tr('ahora')}{RST}   "
+                   f"{DIM}{T.gray}·{RST} {T.gray}{tr('aún no ocurrió')}{RST}   {T.coral_l}↑↓{RST}{DIM}{T.gray} {tr('días pasados')}{RST}")
         L.append(legend)
 
         while len(L) < rows - 1: L.append("")
@@ -1245,8 +1350,10 @@ class App:
 
     def _footer(self):
         if self.confirm is not None:
+            q = "Kill PID" if LANG == "en" else "¿Matar PID"
+            yes = "(y) yes" if LANG == "en" else "(y) sí"
             return (f"{bg(150,50,50)}{fg(255,235,235)}{B}"
-                    f"  ¿Matar PID {self.confirm}?   (y) sí    (n) no  {RST}")
+                    f"  {q} {self.confirm}?   {yes}    (n) no  {RST}")
         if self.help:
             keys = [("?/Esc","volver"),("q","salir")]
         elif self.heat:
@@ -1255,9 +1362,9 @@ class App:
             keys = [("i/Esc","volver"),("↑↓","cambiar"),("↵","ir"),("x","matar"),("q","salir")]
         else:
             keys = [("?","ayuda"),("↵","ir"),("i","detalle"),("h","heatmap"),("↑↓","nav"),("x","matar"),("s/S","orden"),("/","filtro"),
-                    ("g","grupos"),("C","compacto"),("c","limpiar"),("t","tema"),
+                    ("g","grupos"),("C","compacto"),("c","limpiar"),("t","tema"),("L","idioma"),
                     ("m","sonido"),("+/-","volumen"),("n","notif"),("d","muertas"),("q","salir")]
-        f = " ".join(f"{T.coral}{k}{RST}{DIM}{v}{RST}" for k, v in keys)
+        f = " ".join(f"{T.coral}{k}{RST}{DIM}{tr(v)}{RST}" for k, v in keys)
         if self.msg:
             return f"{T.yellow}{B}{self.msg}{RST}    " + f
         return f
@@ -1293,9 +1400,9 @@ class App:
                 for ln in out.splitlines():
                     if proj.lower() in ln.lower():
                         subprocess.run(["wmctrl","-i","-a", ln.split()[0]])
-                        self.msg = f"↪ ventana '{proj}'"; return
+                        self.msg = f"↪ {tr('ventana')} '{proj}'"; return
             except Exception: pass
-        self.msg = "no pude saltar (usá tmux o instalá wmctrl)"
+        self.msg = tr("no pude saltar (usá tmux o instalá wmctrl)")
 
     def click(self, x, y):
         """click izquierdo: iconos del header (sonido/notif) o, en el sidebar,
@@ -1324,16 +1431,16 @@ class App:
             return
         self.vol_i = new
         SOUND_VOL = self.volume
-        self.msg = f"🔊 volumen {int(self.volume*100)}%"
+        self.msg = (f"🔊 volume {int(self.volume*100)}%" if LANG=="en" else f"🔊 volumen {int(self.volume*100)}%")
         if self.sound_on: play_sound("nav")
 
     def ask_kill(self):
         if self.rowpids: self.confirm = self.rowpids[self.sel]
     def do_kill(self, yes):
         pid = self.confirm; self.confirm = None
-        if not yes or pid is None: self.msg = "cancelado"; return
-        try: os.kill(pid, signal.SIGTERM); self.msg = f"✖ cierre enviado a PID {pid}"
-        except OSError: self.msg = f"PID {pid} ya no existe"
+        if not yes or pid is None: self.msg = tr("cancelado"); return
+        try: os.kill(pid, signal.SIGTERM); self.msg = (f"✖ termination sent to PID {pid}" if LANG=="en" else f"✖ cierre enviado a PID {pid}")
+        except OSError: self.msg = (f"PID {pid} no longer exists" if LANG=="en" else f"PID {pid} ya no existe")
     def clean_dead(self):
         c = 0
         for f in glob.glob(os.path.join(SESS_DIR, "*.json")):
@@ -1343,7 +1450,7 @@ class App:
             if not alive(pid):
                 try: os.remove(f); c += 1
                 except OSError: pass
-        self.msg = f"🧹 limpiadas {c} muertas"
+        self.msg = (f"🧹 cleared {c} dead" if LANG=="en" else f"🧹 limpiadas {c} muertas")
 
 CA_cwd = {}  # pid -> cwd, para jump (poblado en collect via render)
 
@@ -1454,6 +1561,10 @@ def run_tui(app):
                 app.theme_i = (app.theme_i + 1) % len(THEME_NAMES)
                 apply_theme(THEME_NAMES[app.theme_i])
             elif ch in ("d","D"): app.show_dead = not app.show_dead
+            elif ch == "L":
+                global LANG
+                LANG = "en" if LANG == "es" else "es"
+                app.msg = f"idioma: {LANG}" if LANG == "es" else f"lang: {LANG}"
             elif ch == "/":
                 termios.tcsetattr(fd, termios.TCSADRAIN, old)
                 sys.stdout.write("\x1b[?25h"); sys.stdout.write(f"\x1b[{os.get_terminal_size()[1]};1H\x1b[K{T.yellow}/ filtro: {RST}")
@@ -1501,6 +1612,10 @@ def main():
         elif a == "--json": mode = "json"
         elif a == "--status": mode = "status"
         elif a == "--interval": i += 1; interval = float(args[i])
+        elif a == "--lang":
+            global LANG; i += 1
+            v = args[i].lower()
+            if v in ("es","en"): LANG = v
         elif a.replace(".","",1).isdigit(): interval = float(a)
         i += 1
     app = App(interval, mode)

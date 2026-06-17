@@ -24,6 +24,9 @@ tenés que estar mirando la terminal.
 - **Aviso de cuelgue** (`⚠ sin avances`) cuando una sesión lleva >3 min trabajando sin
   cambiar de estado, tanto en la tarjeta como en el detalle.
 - **Heatmap de actividad** por hora del día (tecla `h`).
+- **Idioma español / inglés**: por defecto sigue el locale del sistema (inglés si no se
+  puede determinar). Conmutable en vivo (tecla `L`), por flag `--lang es|en` o variable
+  de entorno `CLAUDE_MON_LANG`.
 - **git** (rama + cambios), **CPU/RAM** y **uptime** de cada sesión.
 - **Cuota** de tokens 5h / 7d con barras.
 - **Sparkline de actividad** (USO) por sesión.
@@ -42,6 +45,7 @@ tenés que estar mirando la terminal.
 ./claude-monitor.py --once     # un frame y sale
 ./claude-monitor.py --json     # JSON de todas las sesiones
 ./claude-monitor.py --status   # ◐1 ●4  (para statusline)
+./claude-monitor.py --lang en  # interfaz en inglés
 ```
 
 ### Instalar como comando global
@@ -67,6 +71,7 @@ claude-monitor
 | `C` | modo compacto |
 | `c` | limpiar sesiones muertas |
 | `t` | cambiar tema (oscuro / claro / contraste) |
+| `L` | cambiar idioma (español / inglés) |
 | `m` | activar/silenciar sonidos |
 | `n` | activar/silenciar notificaciones |
 | `d` | mostrar/ocultar sesiones muertas |
@@ -75,6 +80,8 @@ claude-monitor
 ## Configuración (variables de entorno)
 
 - `CLAUDE_CONFIG_DIR` — carpeta de config de Claude (por defecto `~/.claude`).
+- `CLAUDE_MON_LANG` — idioma de la interfaz: `es` o `en` (por defecto sigue el locale del
+  sistema, e inglés si no se puede determinar).
 - `CLAUDE_MON_SND_*` — overrides de sonidos (ver código).
 
 ## Requisitos
