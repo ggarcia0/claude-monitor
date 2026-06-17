@@ -1025,6 +1025,7 @@ class App:
         vbar = "▰"*filled + "▱"*(n - filled)
         items.append((f"{T.teal}🔊 {vbar} {int(self.volume*100)}%{RST}" if self.sound_on else f"{T.yellow}🔇{RST}", "sound"))
         items.append((f"{T.teal}🔔{RST}" if self.notif_on else f"{T.yellow}🔕{RST}", "notif"))
+        items.append((f"{T.coral_l}{B}?{RST}", "help"))
         if self.filter:       items.append((f"{T.yellow}/{self.filter}{RST}", None))
 
         info = [it[0] for it in items]
@@ -1225,13 +1226,13 @@ class App:
         }
         for st in ("waiting","busy","idle","blocked","dead"):
             m = STATUS[st]
-            L.append(f"    {m['accent']}{B}{m['icon']}{RST}  {m['accent']}{pad(tr(m['label']).lower(), 16)}{RST}"
+            L.append(f"    {m['accent']}{B}{m['icon']}{RST}  {m['accent']}{pad(tr(m['label']).lower(), 20)}{RST}"
                      f"{T.gray}{tr(descr[st])}{RST}")
 
         L += ["", f"  {T.cream}{B}{tr('Alertas e indicadores')}{RST}",
-              f"    {T.red}{B}{WARN}{RST}  {pad(tr('aviso'), 16)}{T.gray}{tr('sesión trabajando >3 min sin cambiar de estado (¿colgada?)')}{RST}",
-              f"    {T.red}{B}●{RST}  {pad(tr('edad en rojo'), 16)}{T.gray}{tr('lleva >30 s esperando permiso')}{RST}",
-              f"    {T.coral_l}▲▼{RST} {pad('', 15)}{T.gray}{tr('hay más sesiones arriba/abajo (scroll)')}{RST}"]
+              f"    {T.red}{B}{WARN}{RST}  {pad(tr('aviso'), 20)}{T.gray}{tr('sesión trabajando >3 min sin cambiar de estado (¿colgada?)')}{RST}",
+              f"    {T.red}{B}●{RST}  {pad(tr('edad en rojo'), 20)}{T.gray}{tr('lleva >30 s esperando permiso')}{RST}",
+              f"    {T.coral_l}▲▼{RST} {pad('', 19)}{T.gray}{tr('hay más sesiones arriba/abajo (scroll)')}{RST}"]
 
         L += ["", f"  {T.cream}{B}{tr('La mascota')}{RST}",
               f"    {T.gray}{tr('su cara y postura reflejan el estado: alerta cuando espera permiso,')}{RST}",
@@ -1420,6 +1421,7 @@ class App:
                     LANG = "en" if LANG == "es" else "es"
                 elif act == "group": self.group = not self.group
                 elif act == "compact": self.compact = not self.compact
+                elif act == "help": self.help = not self.help
                 return
         si = self.click_map.get(y)
         if si is None or x > self.click_xmax: return
