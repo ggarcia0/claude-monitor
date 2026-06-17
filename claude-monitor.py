@@ -77,6 +77,9 @@ MASCOT = {
     "blocked": "■□", "dead": "✝✝",
 }
 
+VS15 = "︎"          # fuerza presentación de texto (1 columna) en glifos tipo emoji
+WARN = "⚠" + VS15   # icono de aviso, ancho estable = 1
+
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 def disp_width(s):
@@ -85,6 +88,7 @@ def disp_width(s):
     for ch in s:
         o = ord(ch)
         if o == 0: continue
+        if 0xfe00 <= o <= 0xfe0f: continue   # selectores de variación: ancho 0
         if (0x1100 <= o <= 0x115f or o in (0x2329, 0x232a)
             or (0x2e80 <= o <= 0xa4cf and o != 0x303f)
             or 0xac00 <= o <= 0xd7a3 or 0xf900 <= o <= 0xfaff
@@ -793,7 +797,7 @@ def sparkline(pid, width=11):
 def mascot(status, pid, tick):
     fr = MASCOT.get(status, "✳✳")
     accent = STATUS.get(status, STATUS["idle"])["accent"]
-    return f"{B}{accent}{fr[(tick + pid) % len(fr)]}{RST}"
+    return f"{B}{accent}{fr[(tick + pid) % len(fr)]}{VS15}{RST}"
 
 def gauge(frac, width):
     if frac is None: return ""
@@ -985,7 +989,7 @@ class App:
         agecol = T.red + B if (s.status == "waiting" and s.age > 30) else T.gray
         m      = STATUS.get(s.status, STATUS["idle"])
         warned = (s.status == "busy" and s.age > 180)
-        warn   = f"{T.red}⚠ {RST}" if warned else ""
+        warn   = f"{T.red}{WARN} {RST}" if warned else ""
         ctx    = context_tokens(s.sid)
         ctxcol = T.red if ctx > 160000 else T.yellow if ctx > 120000 else T.teal
         # icono de estado (el mismo de la leyenda) junto a la mascota, para que se entienda
@@ -995,7 +999,7 @@ class App:
             return [self._lr(left, right, wL)]
         lbl = m["label"]
         l1  = self._lr(left, f"{warn}{agecol}{age}{RST}", wL)
-        alert = f"  {T.red}⚠ sin avances{RST}" if warned else ""
+        alert = f"  {T.red}{WARN} sin avances{RST}" if warned else ""
         l2  = (f"   {accent}{lbl}{RST} {T.gray}·{RST} {ctxcol}{fmt_tokens(ctx)}{RST}{T.gray} ctx{RST}"
                f"  {sparkline(s.pid, 8)}{alert}")
         return [l1, l2]
@@ -1042,6 +1046,8 @@ class App:
         L.append("  " + fld("total", f"in {fmt_tokens(d['total_in'])} out {fmt_tokens(d['total_out'])}"))
 
         sec("ACTIVIDAD")
+        if s.status == "busy" and s.age > 180:
+            L.append("  " + fld("aviso", f"{T.red}{B}{WARN} sin avances hace {fmt_age(s.upd)} (¿colgada?){RST}"))
         if s.status == "waiting" and d["pending"]:
             L.append("  " + fld("aprobar", f"{T.yellow}{pad(d['pending'], w-12)}{RST}"))
         L.append("  " + fld("haciendo", f"{T.cream}{pad(s.activity or '—', w-12)}{RST}"))
@@ -1051,8 +1057,9 @@ class App:
         L.append("  " + fld("uso", sparkline(s.pid, min(24, max(8, w-8)))))
 
         sec("CONVERSACIÓN")
+        L.append("  " + fld("modelo", f"{T.purple}{B}{mdl or '—'}{RST}"))
         L.append("  " + fld("modo", f"{d['mode'] or '—'} · {d['perm'] or '—'}"))
-        L.append("  " + fld("turnos", f"{d['n_user']} tú · {d['n_assistant']} claude   {T.gray}{mdl}{RST}"))
+        L.append("  " + fld("turnos", f"{d['n_user']} tú · {d['n_assistant']} claude"))
         if d["last_prompt"]:
             L.append("  " + fld("prompt", f"{T.cream}{pad(d['last_prompt'], w-12)}{RST}"))
 
@@ -1094,7 +1101,7 @@ class App:
         for st in ("waiting","busy","idle","blocked","dead"):
             m = STATUS[st]
             parts.append(f"{m['accent']}{m['icon']}{RST}{DIM} {m['label'].lower()}{RST}")
-        parts.append(f"{T.red}⚠{RST}{DIM} sin avances{RST}")
+        parts.append(f"{T.red}{WARN}{RST}{DIM} sin avances{RST}")
         return f"{T.gray}{DIM}estados:{RST} " + f"{T.gray} · {RST}".join(parts)
 
     def _help(self, cols, rows):
@@ -1117,7 +1124,7 @@ class App:
                      f"{T.gray}{descr[st]}{RST}")
 
         L += ["", f"  {T.cream}{B}Alertas e indicadores{RST}",
-              f"    {T.red}{B}⚠{RST}  {pad('aviso', 16)}{T.gray}sesión trabajando >3 min sin cambiar de estado (¿colgada?){RST}",
+              f"    {T.red}{B}{WARN}{RST}  {pad('aviso', 16)}{T.gray}sesión trabajando >3 min sin cambiar de estado (¿colgada?){RST}",
               f"    {T.red}{B}●{RST}  {pad('edad en rojo', 16)}{T.gray}lleva >30 s esperando permiso{RST}",
               f"    {T.coral_l}▲▼{RST} {pad('', 15)}{T.gray}hay más sesiones arriba/abajo (scroll){RST}"]
 
