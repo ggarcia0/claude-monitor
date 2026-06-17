@@ -81,6 +81,15 @@ claude-monitor
 - Opcionales: `notify-send` (notificaciones), `paplay`/`pw-play`/`aplay` (sonidos),
   `tmux` o `wmctrl` (saltar a la sesión).
 
+## ¿Consume tokens de Claude?
+
+**No.** El monitor **no** hace ninguna llamada a la API de Claude ni gasta cuota.
+Funciona 100 % en local leyendo los archivos que Claude Code ya escribe en disco
+(`~/.claude/sessions/*.json` y `~/.claude/projects/*/<id>.jsonl`). Las cifras de
+**tokens** que se muestran (contexto por sesión, uso del turno, y la cuota **5h / 7d**)
+se **leen** de esos archivos de uso/transcript; el monitor solo los lee y los grafica,
+no genera tráfico ni costo.
+
 ## Cómo funciona
 
 Lee los archivos de sesión de `~/.claude/sessions/*.json` y el historial
