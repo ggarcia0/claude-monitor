@@ -818,6 +818,7 @@ class App:
         self.group = False; self.filter = ""; self.sort_i = 0; self.sort_rev = False
         self.confirm = None; self.msg = ""; self.theme_i = 0
         self.inspect = False; self.heat = False; self.heat_scroll = 0
+        self.help = False
         self.rowpids = []
         self.click_map = {}; self.click_xmax = 0; self._win_sel = []
         self.topbar_clicks = []                              # (fila, x0, x1, acción) iconos clickeables
@@ -826,6 +827,11 @@ class App:
     def render(self):
         cols, rows = os.get_terminal_size()
         cols = max(cols, 80); rows = max(rows, 16)
+
+        # ----- pantalla de ayuda / leyenda (tecla ?) -----
+        if self.help:
+            self.topbar_clicks = []; self.click_map = {}
+            return self._help(cols, rows)
 
         # ----- heatmap de actividad a pantalla completa (tecla h) -----
         if self.heat:
@@ -856,6 +862,7 @@ class App:
 
         top  = self._topbar(counts, cols)                 # 3 líneas
         foot = ["  " + self._statsline([s.pid for s in sessions if s.is_alive]),
+                "  " + self._legend_line(),
                 "  " + self._footer()]
         body_h = max(3, rows - len(top) - len(foot))
 
@@ -976,17 +983,21 @@ class App:
         nm     = f"{T.white}{B}{name}{RST}" if selected else f"{T.cream}{name}{RST}"
         age    = fmt_age(s.upd)
         agecol = T.red + B if (s.status == "waiting" and s.age > 30) else T.gray
-        warn   = f"{T.red}⚠ {RST}" if (s.status == "busy" and s.age > 180) else ""
+        m      = STATUS.get(s.status, STATUS["idle"])
+        warned = (s.status == "busy" and s.age > 180)
+        warn   = f"{T.red}⚠ {RST}" if warned else ""
         ctx    = context_tokens(s.sid)
         ctxcol = T.red if ctx > 160000 else T.yellow if ctx > 120000 else T.teal
-        left   = f"{bar}{arrow} {glyph} {nm}"
+        # icono de estado (el mismo de la leyenda) junto a la mascota, para que se entienda
+        left   = f"{bar}{arrow} {accent}{m['icon']}{RST} {glyph} {nm}"
         if self.compact:
             right = f"{warn}{ctxcol}{fmt_tokens(ctx)}{RST} {agecol}{age}{RST}"
             return [self._lr(left, right, wL)]
-        lbl = STATUS.get(s.status, STATUS["idle"])["label"]
+        lbl = m["label"]
         l1  = self._lr(left, f"{warn}{agecol}{age}{RST}", wL)
+        alert = f"  {T.red}⚠ sin avances{RST}" if warned else ""
         l2  = (f"   {accent}{lbl}{RST} {T.gray}·{RST} {ctxcol}{fmt_tokens(ctx)}{RST}{T.gray} ctx{RST}"
-               f"  {sparkline(s.pid, 8)}")
+               f"  {sparkline(s.pid, 8)}{alert}")
         return [l1, l2]
 
     def _statsline(self, pids):
@@ -1077,6 +1088,57 @@ class App:
         return L
 
     # ---- heatmap por hora: día (filas, navegable ↑↓) × hora del día (columnas) ----
+    def _legend_line(self):
+        """leyenda compacta de estados + alertas, para el footer fijo."""
+        parts = []
+        for st in ("waiting","busy","idle","blocked","dead"):
+            m = STATUS[st]
+            parts.append(f"{m['accent']}{m['icon']}{RST}{DIM} {m['label'].lower()}{RST}")
+        parts.append(f"{T.red}⚠{RST}{DIM} sin avances{RST}")
+        return f"{T.gray}{DIM}estados:{RST} " + f"{T.gray} · {RST}".join(parts)
+
+    def _help(self, cols, rows):
+        inner = cols - 2
+        L = [f"{T.coral}╭{'─'*inner}╮{RST}",
+             self._band(gradient("AYUDA · LEYENDA DE ESTADOS E ICONOS", self.tick, GRAD_PAL), inner),
+             f"{T.coral}╰{'─'*inner}╯{RST}", ""]
+
+        L.append(f"  {T.cream}{B}Estados de sesión{RST}")
+        descr = {
+            "waiting": "esperando que confirmes un permiso (¡requiere tu atención!)",
+            "blocked": "bloqueada por un error o esperando una dependencia",
+            "busy":    "ejecutando una tarea ahora mismo",
+            "idle":    "viva pero sin actividad reciente",
+            "dead":    "el proceso terminó",
+        }
+        for st in ("waiting","busy","idle","blocked","dead"):
+            m = STATUS[st]
+            L.append(f"    {m['accent']}{B}{m['icon']}{RST}  {m['accent']}{pad(m['label'].lower(), 16)}{RST}"
+                     f"{T.gray}{descr[st]}{RST}")
+
+        L += ["", f"  {T.cream}{B}Alertas e indicadores{RST}",
+              f"    {T.red}{B}⚠{RST}  {pad('aviso', 16)}{T.gray}sesión trabajando >3 min sin cambiar de estado (¿colgada?){RST}",
+              f"    {T.red}{B}●{RST}  {pad('edad en rojo', 16)}{T.gray}lleva >30 s esperando permiso{RST}",
+              f"    {T.coral_l}▲▼{RST} {pad('', 15)}{T.gray}hay más sesiones arriba/abajo (scroll){RST}"]
+
+        L += ["", f"  {T.cream}{B}La mascota{RST}",
+              f"    {T.gray}su cara y postura reflejan el estado: alerta cuando espera permiso,{RST}",
+              f"    {T.gray}activa cuando trabaja, y dormida (zzz) cuando está en reposo.{RST}"]
+
+        L += ["", f"  {T.cream}{B}Atajos de teclado{RST}"]
+        keys = [("↑↓ / j k","navegar"),("Enter","ir a la sesión (tmux/ventana)"),("i","detalle a pantalla completa"),
+                ("h","mapa de calor de actividad"),("x","matar sesión"),("s / S","ordenar / invertir"),
+                ("/","filtrar"),("g","agrupar por proyecto"),("C","modo compacto"),("c","limpiar muertas"),
+                ("t","cambiar tema"),("m","sonido"),("+/-","volumen"),("n","notificaciones"),
+                ("d","ver/ocultar muertas"),("?","esta ayuda"),("q","salir")]
+        for k, v in keys:
+            L.append(f"    {T.coral}{B}{pad(k, 12)}{RST}{T.gray}{v}{RST}")
+
+        while len(L) < rows - 1: L.append("")
+        L = L[:rows-1]
+        L.append("  " + self._footer())
+        return L
+
     def _heatmap(self, cols, rows):
         from datetime import date, timedelta
         inner = cols - 2
@@ -1178,12 +1240,14 @@ class App:
         if self.confirm is not None:
             return (f"{bg(150,50,50)}{fg(255,235,235)}{B}"
                     f"  ¿Matar PID {self.confirm}?   (y) sí    (n) no  {RST}")
-        if self.heat:
+        if self.help:
+            keys = [("?/Esc","volver"),("q","salir")]
+        elif self.heat:
             keys = [("h/Esc","volver"),("q","salir")]
         elif self.inspect:
             keys = [("i/Esc","volver"),("↑↓","cambiar"),("↵","ir"),("x","matar"),("q","salir")]
         else:
-            keys = [("↵","ir"),("i","detalle"),("h","heatmap"),("↑↓","nav"),("x","matar"),("s/S","orden"),("/","filtro"),
+            keys = [("?","ayuda"),("↵","ir"),("i","detalle"),("h","heatmap"),("↑↓","nav"),("x","matar"),("s/S","orden"),("/","filtro"),
                     ("g","grupos"),("C","compacto"),("c","limpiar"),("t","tema"),
                     ("m","sonido"),("+/-","volumen"),("n","notif"),("d","muertas"),("q","salir")]
         f = " ".join(f"{T.coral}{k}{RST}{DIM}{v}{RST}" for k, v in keys)
@@ -1359,10 +1423,12 @@ def run_tui(app):
                         if b == 64: nav(-1)                           # rueda arriba
                         elif b == 65: nav(1)                          # rueda abajo
                         elif (b & 3) == 0: app.click(mx, my)          # botón izquierdo
+                elif seq == "" and app.help: app.help = False          # Esc cierra ayuda
                 elif seq == "" and app.heat: app.heat = False          # Esc cierra heatmap
                 elif seq == "" and app.inspect: app.inspect = False    # Esc cierra inspector
                 continue
-            if ch in ("h","H"): app.heat = not app.heat; app.heat_scroll = 0
+            if ch == "?": app.help = not app.help
+            elif ch in ("h","H"): app.heat = not app.heat; app.heat_scroll = 0
             elif ch in ("i","I"): app.inspect = not app.inspect
             elif ch in ("\r","\n"): app.jump()
             elif ch in ("k","K"): nav(-1)
