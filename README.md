@@ -3,6 +3,9 @@
 Monitor en vivo, estilo `htop`, de tus sesiones de [Claude Code](https://claude.com/claude-code).
 Una TUI con colores, mascota animada y sonidos chiptune 8-bit que te muestra qué está
 haciendo cada sesión, cuáles esperan permiso, su uso de contexto, git, CPU/RAM y más.
+Además te avisa con **notificaciones de escritorio del sistema operativo** cuando una
+sesión cambia de estado (por ejemplo, cuando pasa a esperar tu permiso), así no
+tenés que estar mirando la terminal.
 
 ![estado](https://img.shields.io/badge/stdlib-only-blue) ![python](https://img.shields.io/badge/python-3.8%2B-green)
 
