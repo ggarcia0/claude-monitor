@@ -6,6 +6,8 @@ haciendo cada sesión, cuáles esperan permiso, su uso de contexto, git, CPU/RAM
 
 ![estado](https://img.shields.io/badge/stdlib-only-blue) ![python](https://img.shields.io/badge/python-3.8%2B-green)
 
+![Claude Monitor](assets/screenshot.png)
+
 ## Características
 
 - **Layout maestro-detalle de dos paneles**: a la izquierda la lista de sesiones como
