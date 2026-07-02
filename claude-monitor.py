@@ -502,7 +502,8 @@ def tmux_pane_of(pid):
     return ""
 
 def title_of(sid):
-    """nombre/título auto-generado de la sesión (aiTitle). cacheado por mtime."""
+    """título de la sesión: el que pusiste a mano en Claude Desktop (custom-title)
+    o, si no hay, el auto-generado (ai-title). cacheado por mtime."""
     if not sid:
         return ""
     jf = jsonl_for(sid)
@@ -512,12 +513,16 @@ def title_of(sid):
     except OSError: return ""
     if CA.title_mt.get(sid) == mt:
         return CA.title.get(sid, "")
-    t = ""
+    custom = ai = ""
     for line in reversed(tail_lines(jf, 400)):
         try: o = json.loads(line)
         except Exception: continue
-        if o.get("type") == "ai-title" and o.get("aiTitle"):
-            t = o["aiTitle"]; break
+        typ = o.get("type")
+        if typ == "custom-title" and o.get("customTitle"):
+            custom = o["customTitle"]; break          # prioridad: nombre manual
+        if typ == "ai-title" and o.get("aiTitle") and not ai:
+            ai = o["aiTitle"]
+    t = custom or ai
     CA.title[sid] = t; CA.title_mt[sid] = mt
     return t
 
@@ -713,13 +718,14 @@ def play_sound(kind, pid=None):
 
 # ───────────────────────── session model ──────────────────────────────────
 class Session:
-    __slots__=("pid","status","kind","cwd","upd","sid","wf","ver","name","started",
+    __slots__=("pid","status","kind","cwd","upd","sid","wf","ver","name","namesrc","started",
                "entry","jobid","is_alive","activity")
     def __init__(self, d):
         self.pid = int(d.get("pid", 0)); self.kind = d.get("kind","?")
         self.cwd = d.get("cwd",""); self.upd = d.get("statusUpdatedAt") or d.get("updatedAt") or 0
         self.sid = d.get("sessionId",""); self.wf = d.get("waitingFor","")
         self.ver = d.get("version",""); self.name = d.get("name","")
+        self.namesrc = d.get("nameSource","")
         self.started = d.get("startedAt") or 0
         self.entry = d.get("entrypoint",""); self.jobid = d.get("jobId","")
         self.is_alive = alive(self.pid)
@@ -733,8 +739,11 @@ class Session:
     def meta(self): return STATUS.get(self.status, STATUS["idle"])
     @property
     def display_name(self):
-        # nombre manual (--name) > título auto-generado > carpeta
-        return self.name or title_of(self.sid) or (short_path(self.cwd).split("/")[-1] or "—")
+        # nombre manual (--name) > título de Desktop/auto (custom-title/ai-title)
+        #   > nombre derivado del cwd > carpeta
+        manual = self.name if self.name and self.namesrc != "derived" else ""
+        return (manual or title_of(self.sid) or self.name
+                or (short_path(self.cwd).split("/")[-1] or "—"))
 
 def collect(app):
     sessions, seen = [], set()
@@ -755,8 +764,8 @@ def collect(app):
             CA.changed[s.pid] = app.tick           # para el flash de la fila
             if app.mode == "tui":
                 snd = app.sound_on; ntf = app.notif_on
-                # nombre de la sesión si existe (manual o auto), si no el PID
-                ident = s.name or title_of(s.sid) or f"PID {s.pid}"
+                # nombre de la sesión (manual/custom/auto), si no el PID
+                ident = s.display_name or f"PID {s.pid}"
                 loc = short_path(s.cwd); tag = f"claude-{s.pid}"
                 if s.status == "waiting":
                     if snd: play_sound("permission", s.pid)
@@ -953,13 +962,19 @@ class App:
         counts = defaultdict(int)
         for s in sessions: counts[s.status] += 1
 
+        # al agrupar, clusterizamos por proyecto (cwd) conservando el orden de sort
+        # dentro de cada grupo; así el mismo proyecto no aparece con headers repetidos.
+        if self.group:
+            groups = {}                                   # cwd -> [sesiones] (orden de 1ª aparición)
+            for s in sessions:
+                groups.setdefault(s.cwd, []).append(s)
+            sessions = [s for cwd in groups for s in groups[cwd]]
+
         # items (cabeceras de grupo + sesiones) -> rowpids, clamp de selección
-        items = []; self.rowpids = []; last_proj = None
+        items = []; self.rowpids = []; last_cwd = None
         for s in sessions:
-            if self.group:
-                proj = "~" if s.cwd == HOME else os.path.basename(s.cwd) or s.cwd
-                if proj != last_proj:
-                    items.append(("h", short_path(s.cwd))); last_proj = proj
+            if self.group and s.cwd != last_cwd:
+                items.append(("h", short_path(s.cwd))); last_cwd = s.cwd
             items.append(("s", s, len(self.rowpids))); self.rowpids.append(s.pid)
         count = len(self.rowpids)
         self.sel = 0 if count == 0 else max(0, min(self.sel, count-1))
@@ -1019,7 +1034,8 @@ class App:
         items = [(f"{T.gray}↓↑ {tr(SORT_FIELDS[self.sort_i][0])}{'↓' if self.sort_rev else '↑'}{RST}", "sort"),
                  (f"{T.gray}🎨 {THEME_NAMES[self.theme_i]}{RST}", "theme"),
                  (f"{T.gray}🌐 {LANG}{RST}", "lang")]
-        if self.group:        items.append((f"{T.purple}⊞{tr('grupos')}{RST}", "group"))
+        items.append((f"{T.purple}⊞{tr('grupos')}{RST}" if self.group
+                      else f"{T.gray}⊞{tr('grupos')}{RST}", "group"))
         if self.compact:      items.append((f"{T.purple}≡{tr('compacto')}{RST}", "compact"))
         n = len(VOL_LEVELS); filled = self.vol_i + 1
         vbar = "▰"*filled + "▱"*(n - filled)
